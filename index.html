@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#151922" />
+  <title>Royal Board Chess</title>
+  <link rel="stylesheet" href="style.css?v=8" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">HTML • CSS • JavaScript</p>
+        <h1>Royal Board <span>Chess</span></h1>
+      </div>
+      <div class="top-actions">
+        <label class="switch-row" title="Turn game sounds on or off">
+          <input id="soundToggle" type="checkbox" checked />
+          <span class="switch"></span>
+          Sound
+        </label>
+        <label class="switch-row" title="Show legal destination squares">
+          <input id="hintToggle" type="checkbox" checked />
+          <span class="switch"></span>
+          Move hints
+        </label>
+      </div>
+    </header>
+
+    <section class="game-layout">
+      <aside class="panel setup-panel">
+        <div class="panel-title">
+          <span class="panel-icon">⚙</span>
+          <div>
+            <h2>Game setup</h2>
+            <p>Choose the battlefield.</p>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>Game mode</span>
+          <select id="modeSelect">
+            <option value="computer">Play vs computer</option>
+            <option value="human">Two players</option>
+          </select>
+        </label>
+
+        <label class="field" id="colorField">
+          <span>Your color</span>
+          <select id="colorSelect">
+            <option value="w">White</option>
+            <option value="b">Black</option>
+            <option value="random">Random</option>
+          </select>
+        </label>
+
+        <label class="field" id="difficultyField">
+          <span>Computer difficulty</span>
+          <select id="difficultySelect">
+            <option value="easy">Easy</option>
+            <option value="medium" selected>Medium</option>
+            <option value="hard">Hard</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Clock</span>
+          <select id="clockSelect">
+            <option value="0">No clock</option>
+            <option value="3">3 minutes</option>
+            <option value="5">5 minutes</option>
+            <option value="10">10 minutes</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Board theme</span>
+          <select id="themeSelect">
+            <option value="classic">Classic walnut</option>
+            <option value="ocean">Ocean blue</option>
+            <option value="forest">Forest green</option>
+          </select>
+        </label>
+
+        <button class="primary-btn" id="newGameBtn">Start new game</button>
+
+        <div class="feature-note">
+          <strong>Controls</strong>
+          <p>Click or drag a piece. Legal moves appear as dots; captures appear as rings.</p>
+        </div>
+      </aside>
+
+      <section class="board-column">
+        <div class="player-card player-black" id="blackPlayerCard">
+          <div class="player-avatar">♚</div>
+          <div class="player-details">
+            <strong id="blackPlayerName">Computer</strong>
+            <span id="blackCaptured" class="captured"></span>
+          </div>
+          <div class="clock" id="blackClock">--:--</div>
+        </div>
+
+        <div class="board-wrap">
+          <div class="thinking-badge" id="thinkingBadge">Computer is thinking…</div>
+          <div id="chessboard" class="chessboard" aria-label="Chess board"></div>
+        </div>
+
+        <div class="player-card player-white" id="whitePlayerCard">
+          <div class="player-avatar">♚</div>
+          <div class="player-details">
+            <strong id="whitePlayerName">You</strong>
+            <span id="whiteCaptured" class="captured"></span>
+          </div>
+          <div class="clock" id="whiteClock">--:--</div>
+        </div>
+      </section>
+
+      <aside class="panel game-panel">
+        <div class="status-card">
+          <span class="status-dot" id="statusDot"></span>
+          <div>
+            <small>GAME STATUS</small>
+            <strong id="statusText">White to move</strong>
+          </div>
+        </div>
+
+        <div class="last-move-card">
+          <span>Last move</span>
+          <strong id="lastMoveText">No moves yet</strong>
+        </div>
+
+        <div class="move-history-section">
+          <div class="section-heading">
+            <h2>Move history</h2>
+            <button class="icon-btn" id="copyMovesBtn" title="Copy move history">⧉</button>
+          </div>
+          <div id="moveHistory" class="move-history">
+            <p class="empty-state">Your moves will appear here.</p>
+          </div>
+        </div>
+
+        <div class="control-grid">
+          <button id="undoBtn">↶ <span>Undo</span></button>
+          <button id="flipBtn">⇅ <span>Flip</span></button>
+          <button id="drawBtn">½ <span>Draw</span></button>
+          <button id="resignBtn" class="danger-btn">⚑ <span>Resign</span></button>
+        </div>
+      </aside>
+    </section>
+  </main>
+
+  <div class="modal-backdrop hidden" id="promotionModal" role="dialog" aria-modal="true" aria-label="Choose promotion piece">
+    <div class="modal-card">
+      <p>Promote your pawn</p>
+      <h2>Choose a piece</h2>
+      <div class="promotion-options" id="promotionOptions"></div>
+    </div>
+  </div>
+
+  <div class="check-banner" id="checkBanner" role="status" aria-live="assertive"></div>
+
+  <div class="modal-backdrop hidden" id="gameOverModal" role="dialog" aria-modal="true" aria-labelledby="gameOverTitle">
+    <div class="modal-card game-over-card">
+      <div class="game-over-icon" id="gameOverIcon">♚</div>
+      <p id="gameOverLabel">GAME OVER</p>
+      <h2 id="gameOverTitle">Checkmate</h2>
+      <div class="game-over-message" id="gameOverMessage"></div>
+      <div class="game-over-actions">
+        <button class="primary-btn" id="modalNewGameBtn">New Game</button>
+        <button id="closeGameOverBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script src="script.js?v=8"></script>
+</body>
+</html>
