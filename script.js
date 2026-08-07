@@ -2,13 +2,22 @@
 
 const FILES = "abcdefgh";
 const PIECES = {
-  w: { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" },
+  w: { k: "♔", q: "♕", r: "♖", b: "♗", n: "♘", p: "♙" },
   b: { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" }
 };
 const PIECE_NAMES = { k: "K", q: "Q", r: "R", b: "B", n: "N", p: "" };
 const VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
-const STORAGE_KEY = "royal-board-chess-save-v5";
-const WINDOW_NAME_PREFIX = "ROYAL_BOARD_CHESS_V5:";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDHr0TKKvO8wVb8MBT65PPfwtel5Djegjg",
+  authDomain: "chess-74f28.firebaseapp.com",
+  databaseURL: "https://chess-74f28-default-rtdb.firebaseio.com",
+  projectId: "chess-74f28",
+  storageBucket: "chess-74f28.firebasestorage.app",
+  messagingSenderId: "706064311273",
+  appId: "1:706064311273:web:2beaa0fc66741e4148e178"
+};
+const LOCAL_SAVE_KEY = "royalBoardChessSaveV10";
 
 const clonePiece = piece => piece ? { ...piece } : null;
 const opposite = color => color === "w" ? "b" : "w";
@@ -395,24 +404,29 @@ class ChessUI {
     this.clockHistory = [];
     this.timer = null;
     this.toastTimer = null;
-    this.checkBannerTimer = null;
-    this.lastShownResultKey = null;
     this.audioContext = null;
     this.dragFrom = null;
+    this.firebaseReady = false;
+    this.firebaseReadyPromise = null;
+    this.db = null;
+    this.auth = null;
+    this.uid = null;
+    this.roomCode = null;
+    this.roomRef = null;
+    this.roomListener = null;
+    this.onlineColor = null;
+    this.isRoomCreator = false;
+    this.opponentConnected = false;
+    this.applyingRemoteState = false;
+    this.onlineBusy = false;
+    this.onlineSyncing = false;
+    this.onlineVersion = 0;
     this.cacheDom();
     this.bindEvents();
-    const restored = this.loadSavedGame();
-    if (!restored) this.startNewGame();
-    else {
-      this.updatePlayerNames();
-      this.updateSetupVisibility();
-      this.render();
-      window.setTimeout(() => this.showToast("Saved game restored"), 150);
-      if (this.mode === "computer" && !this.game.result && this.game.turn === this.aiColor) {
-        this.requestAiMove();
-      }
-    }
+    this.initFirebase();
+    if (!this.restoreLocalGame()) this.startNewGame();
     this.startClockLoop();
+    this.tryJoinFromUrl();
   }
 
   cacheDom() {
@@ -422,157 +436,46 @@ class ChessUI {
       "soundToggle","hintToggle","statusText","statusDot","lastMoveText","moveHistory","copyMovesBtn",
       "whitePlayerName","blackPlayerName","whiteCaptured","blackCaptured","whiteClock","blackClock",
       "whitePlayerCard","blackPlayerCard","thinkingBadge","promotionModal","promotionOptions","toast",
-      "checkBanner","gameOverModal","gameOverIcon","gameOverLabel","gameOverTitle","gameOverMessage",
-      "modalNewGameBtn","closeGameOverBtn"
+      "onlinePanel","createOnlineBtn","roomCodeInput","joinOnlineBtn","roomCard","roomCodeText",
+      "copyRoomLinkBtn","exitOnlineBtn","onlineStatusText"
     ];
     for (const id of ids) this[id] = document.getElementById(id);
   }
 
   bindEvents() {
-    this.modeSelect.addEventListener("change", () => {
-      this.updateSetupVisibility();
-      this.saveGame();
-    });
+    this.modeSelect.addEventListener("change", () => this.updateSetupVisibility());
     this.newGameBtn.addEventListener("click", () => this.startNewGame());
     this.undoBtn.addEventListener("click", () => this.undo());
-    this.flipBtn.addEventListener("click", () => {
-      this.flipped = !this.flipped;
-      this.render();
-      this.saveGame();
-    });
+    this.flipBtn.addEventListener("click", () => { this.flipped = !this.flipped; this.render(); this.saveLocalGame(); });
     this.drawBtn.addEventListener("click", () => this.endAsDraw());
     this.resignBtn.addEventListener("click", () => this.resign());
     this.copyMovesBtn.addEventListener("click", () => this.copyMoves());
-    this.themeSelect.addEventListener("change", () => {
-      this.render();
-      this.saveGame();
+    this.themeSelect.addEventListener("change", () => { this.render(); this.saveLocalGame(); });
+    this.hintToggle.addEventListener("change", () => { this.renderBoard(); this.saveLocalGame(); });
+    this.createOnlineBtn.addEventListener("click", () => this.createOnlineGame());
+    this.joinOnlineBtn.addEventListener("click", () => this.joinOnlineGame(this.roomCodeInput.value));
+    this.roomCodeInput.addEventListener("keydown", e => { if (e.key === "Enter") this.joinOnlineGame(this.roomCodeInput.value); });
+    this.roomCodeInput.addEventListener("input", () => {
+      this.roomCodeInput.value = this.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
     });
-    this.hintToggle.addEventListener("change", () => {
-      this.renderBoard();
-      this.saveGame();
-    });
-    this.soundToggle.addEventListener("change", () => this.saveGame());
-    this.colorSelect.addEventListener("change", () => this.saveGame());
-    this.difficultySelect.addEventListener("change", () => this.saveGame());
-    this.clockSelect.addEventListener("change", () => this.saveGame());
-    window.addEventListener("beforeunload", () => this.saveGame());
-    this.modalNewGameBtn.addEventListener("click", () => {
-      this.hideGameOver();
-      this.startNewGame();
-    });
-    this.closeGameOverBtn.addEventListener("click", () => this.hideGameOver());
-  }
-
-  writeSavedData(raw) {
-    let stored = false;
-    try {
-      localStorage.setItem(STORAGE_KEY, raw);
-      stored = true;
-    } catch { /* Local storage may be restricted for local files. */ }
-
-    try {
-      window.name = `${WINDOW_NAME_PREFIX}${raw}`;
-      stored = true;
-    } catch { /* window.name is only a reload fallback. */ }
-    return stored;
-  }
-
-  readSavedData() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return raw;
-    } catch { /* Try the reload fallback below. */ }
-
-    try {
-      if (typeof window.name === "string" && window.name.startsWith(WINDOW_NAME_PREFIX)) {
-        return window.name.slice(WINDOW_NAME_PREFIX.length);
-      }
-    } catch { /* No available persistence storage. */ }
-    return null;
-  }
-
-  saveGame() {
-    try {
-      const payload = {
-        version: 5,
-        savedAt: Date.now(),
-        game: this.game.snapshot(),
-        history: this.game.history,
-        mode: this.mode,
-        humanColor: this.humanColor,
-        aiColor: this.aiColor,
-        flipped: this.flipped,
-        clockSeconds: this.clockSeconds,
-        clockHistory: this.clockHistory,
-        settings: {
-          mode: this.modeSelect.value,
-          color: this.colorSelect.value,
-          difficulty: this.difficultySelect.value,
-          clock: this.clockSelect.value,
-          theme: this.themeSelect.value,
-          sound: this.soundToggle.checked,
-          hints: this.hintToggle.checked
-        }
-      };
-      return this.writeSavedData(JSON.stringify(payload));
-    } catch (error) {
-      console.warn("Could not save chess game:", error);
-      return false;
-    }
-  }
-
-  loadSavedGame() {
-    try {
-      const raw = this.readSavedData();
-      if (!raw) return false;
-      const saved = JSON.parse(raw);
-      if (!saved || saved.version !== 5 || !saved.game || !Array.isArray(saved.game.board)) return false;
-      if (saved.game.board.length !== 8 || saved.game.board.some(row => !Array.isArray(row) || row.length !== 8)) return false;
-
-      this.game.restore(saved.game);
-      this.game.history = Array.isArray(saved.history) ? saved.history : [];
-      this.mode = saved.mode === "human" ? "human" : "computer";
-      this.humanColor = saved.humanColor === "b" ? "b" : "w";
-      this.aiColor = opposite(this.humanColor);
-      this.flipped = Boolean(saved.flipped);
-      this.clockSeconds = saved.clockSeconds && typeof saved.clockSeconds === "object"
-        ? { w: saved.clockSeconds.w ?? null, b: saved.clockSeconds.b ?? null }
-        : { w: null, b: null };
-      this.clockHistory = Array.isArray(saved.clockHistory) ? saved.clockHistory : [];
-
-      const settings = saved.settings || {};
-      if (["computer", "human"].includes(settings.mode)) this.modeSelect.value = settings.mode;
-      if (["w", "b", "random"].includes(settings.color)) this.colorSelect.value = settings.color;
-      if (["easy", "medium", "hard"].includes(settings.difficulty)) this.difficultySelect.value = settings.difficulty;
-      if (["0", "3", "5", "10"].includes(String(settings.clock))) this.clockSelect.value = String(settings.clock);
-      if (["classic", "ocean", "forest"].includes(settings.theme)) this.themeSelect.value = settings.theme;
-      if (typeof settings.sound === "boolean") this.soundToggle.checked = settings.sound;
-      if (typeof settings.hints === "boolean") this.hintToggle.checked = settings.hints;
-
-      this.selected = null;
-      this.selectedMoves = [];
-      this.pendingPromotion = null;
-      this.aiThinking = false;
-      this.promotionModal.classList.add("hidden");
-      this.thinkingBadge.classList.remove("show");
-      return true;
-    } catch (error) {
-      console.warn("Could not restore chess game:", error);
-      try { localStorage.removeItem(STORAGE_KEY); } catch { /* Ignore storage errors. */ }
-      try {
-        if (window.name.startsWith(WINDOW_NAME_PREFIX)) window.name = "";
-      } catch { /* Ignore fallback-storage errors. */ }
-      return false;
-    }
+    this.copyRoomLinkBtn.addEventListener("click", () => this.copyRoomLink());
+    this.exitOnlineBtn.addEventListener("click", () => this.exitOnlineGame());
   }
 
   updateSetupVisibility() {
     const vsComputer = this.modeSelect.value === "computer";
+    const online = this.modeSelect.value === "online";
     this.colorField.style.display = vsComputer ? "grid" : "none";
     this.difficultyField.style.display = vsComputer ? "grid" : "none";
+    this.newGameBtn.style.display = online ? "none" : "block";
+    this.onlinePanel.classList.toggle("show", online);
   }
 
   startNewGame() {
+    if (this.mode === "online" && this.roomCode) {
+      this.showToast("Exit the online room before starting another game");
+      return;
+    }
     this.game.reset();
     this.mode = this.modeSelect.value;
     let chosen = this.colorSelect.value;
@@ -590,13 +493,16 @@ class ChessUI {
     this.updatePlayerNames();
     this.updateSetupVisibility();
     this.render();
-    this.saveGame();
     this.playSound("start");
+    this.saveLocalGame();
     if (this.mode === "computer" && this.game.turn === this.aiColor) this.requestAiMove();
   }
 
   updatePlayerNames() {
-    if (this.mode === "human") {
+    if (this.mode === "online") {
+      this.whitePlayerName.textContent = this.onlineColor === "w" ? "You • White" : "Friend • White";
+      this.blackPlayerName.textContent = this.onlineColor === "b" ? "You • Black" : "Friend • Black";
+    } else if (this.mode === "human") {
       this.whitePlayerName.textContent = "Player 1 • White";
       this.blackPlayerName.textContent = "Player 2 • Black";
     } else if (this.humanColor === "w") {
@@ -609,7 +515,8 @@ class ChessUI {
   }
 
   canHumanAct() {
-    if (this.game.result || this.aiThinking) return false;
+    if (this.game.result || this.aiThinking || this.onlineSyncing) return false;
+    if (this.mode === "online") return Boolean(this.roomCode && this.opponentConnected && this.onlineColor === this.game.turn);
     return this.mode === "human" || this.game.turn === this.humanColor;
   }
 
@@ -653,8 +560,9 @@ class ChessUI {
     this.promotionModal.classList.remove("hidden");
   }
 
-  performMove(move, isAi = false) {
+  async performMove(move, isAi = false) {
     if (this.game.result) return;
+    const onlineRollback = this.mode === "online" ? this.exportOnlineState() : null;
     this.clockHistory.push({ ...this.clockSeconds });
     const captured = Boolean(this.game.board[move.to.r][move.to.c] || move.special === "enPassant");
     const success = this.game.commitMove(move);
@@ -664,16 +572,23 @@ class ChessUI {
     }
     this.selected = null;
     this.selectedMoves = [];
+    if (this.mode === "online") {
+      this.onlineSyncing = true;
+      this.onlineStatusText.textContent = "Syncing move…";
+    }
     this.render();
-    this.saveGame();
+    this.saveLocalGame();
+    if (this.mode === "online" && !this.applyingRemoteState) {
+      await this.syncOnlineState(onlineRollback);
+      this.onlineSyncing = false;
+      this.updateOnlineStatus();
+      this.render();
+      this.saveLocalGame();
+    }
 
-    if (this.game.result) {
-      this.playSound("end");
-      this.showGameOver();
-    } else if (this.game.isKingInCheck(this.game.turn)) {
-      this.playSound("check");
-      this.showCheckBanner(this.game.turn);
-    } else this.playSound(captured ? "capture" : "move");
+    if (this.game.result) this.playSound("end");
+    else if (this.game.isKingInCheck(this.game.turn)) this.playSound("check");
+    else this.playSound(captured ? "capture" : "move");
 
     if (!isAi && this.mode === "computer" && !this.game.result && this.game.turn === this.aiColor) this.requestAiMove();
   }
@@ -792,6 +707,10 @@ class ChessUI {
   }
 
   undo() {
+    if (this.mode === "online") {
+      this.showToast("Undo is unavailable in online games");
+      return;
+    }
     if (this.aiThinking || !this.game.history.length) return;
     let count = this.mode === "computer" ? 2 : 1;
     while (count-- > 0 && this.game.history.length) {
@@ -802,29 +721,47 @@ class ChessUI {
     this.selected = null;
     this.selectedMoves = [];
     this.render();
-    this.saveGame();
     this.playSound("move");
   }
 
   endAsDraw() {
     if (this.game.result) return;
+    const onlineRollback = this.mode === "online" ? this.exportOnlineState() : null;
     this.game.result = { type: "agreement", winner: null };
     this.selected = null;
     this.selectedMoves = [];
     this.render();
-    this.saveGame();
     this.playSound("end");
+    this.saveLocalGame();
+    if (this.mode === "online") {
+      this.onlineSyncing = true;
+      this.syncOnlineState(onlineRollback).finally(() => {
+        this.onlineSyncing = false;
+        this.updateOnlineStatus();
+        this.render();
+      });
+    }
   }
 
   resign() {
     if (this.game.result) return;
-    const resigning = this.mode === "computer" ? this.humanColor : this.game.turn;
+    const onlineRollback = this.mode === "online" ? this.exportOnlineState() : null;
+    const resigning = this.mode === "computer" ? this.humanColor :
+      this.mode === "online" ? this.onlineColor : this.game.turn;
     this.game.result = { type: "resignation", winner: opposite(resigning) };
     this.selected = null;
     this.selectedMoves = [];
     this.render();
-    this.saveGame();
     this.playSound("end");
+    this.saveLocalGame();
+    if (this.mode === "online") {
+      this.onlineSyncing = true;
+      this.syncOnlineState(onlineRollback).finally(() => {
+        this.onlineSyncing = false;
+        this.updateOnlineStatus();
+        this.render();
+      });
+    }
   }
 
   render() {
@@ -834,51 +771,10 @@ class ChessUI {
     this.renderCaptured();
     this.renderClocks();
     this.lastMoveText.textContent = this.game.moveList.at(-1) || "No moves yet";
-    this.undoBtn.disabled = !this.game.history.length || this.aiThinking;
-    this.drawBtn.disabled = Boolean(this.game.result);
-    this.resignBtn.disabled = Boolean(this.game.result);
-    if (this.game.result) this.showGameOver();
-  }
-
-  showCheckBanner(color) {
-    clearTimeout(this.checkBannerTimer);
-    const name = color === "w" ? "WHITE" : "BLACK";
-    this.checkBanner.textContent = `${name} IS IN CHECK!`;
-    this.checkBanner.classList.add("show");
-    this.checkBannerTimer = window.setTimeout(() => this.checkBanner.classList.remove("show"), 2200);
-  }
-
-  resultDetails() {
-    const result = this.game.result;
-    const winner = result?.winner === "w" ? "White" : result?.winner === "b" ? "Black" : null;
-    const map = {
-      checkmate: ["CHECKMATE", "Checkmate", `${winner} wins. The opposing king has no legal escape.`],
-      stalemate: ["DRAW", "Stalemate", "The player to move has no legal move and is not in check."],
-      fifty: ["DRAW", "50-move rule", "The game is drawn after fifty moves without a pawn move or capture."],
-      repetition: ["DRAW", "Threefold repetition", "The same position occurred three times."],
-      insufficient: ["DRAW", "Insufficient material", "Neither side has enough material to force checkmate."],
-      agreement: ["DRAW", "Draw agreed", "Both players agreed to a draw."],
-      resignation: ["GAME OVER", `${winner} wins`, "The opponent resigned."],
-      timeout: ["TIME", `${winner} wins on time`, "The opponent's clock reached zero."]
-    };
-    return map[result?.type] || ["GAME OVER", "Game over", "The game has ended."];
-  }
-
-  showGameOver() {
-    if (!this.game.result) return;
-    const key = `${this.game.result.type}:${this.game.result.winner || "draw"}:${this.game.moveList.length}`;
-    if (this.lastShownResultKey === key && !this.gameOverModal.classList.contains("hidden")) return;
-    this.lastShownResultKey = key;
-    const [label, title, message] = this.resultDetails();
-    this.gameOverLabel.textContent = label;
-    this.gameOverTitle.textContent = title;
-    this.gameOverMessage.textContent = message;
-    this.gameOverIcon.textContent = this.game.result.winner === "w" ? "♚" : this.game.result.winner === "b" ? "♚" : "½";
-    this.gameOverModal.classList.remove("hidden");
-  }
-
-  hideGameOver() {
-    if (this.gameOverModal) this.gameOverModal.classList.add("hidden");
+    this.undoBtn.disabled = this.mode === "online" || !this.game.history.length || this.aiThinking;
+    const waitingOnline = this.mode === "online" && !this.opponentConnected;
+    this.drawBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
+    this.resignBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
   }
 
   renderBoard() {
@@ -895,8 +791,6 @@ class ChessUI {
       square.className = `square ${(r + c) % 2 ? "dark" : "light"}`;
       square.dataset.r = r;
       square.dataset.c = c;
-      square.style.setProperty("--board-row", String(displayR));
-      square.style.setProperty("--board-col", String(displayC));
       square.setAttribute("role", "button");
       square.setAttribute("aria-label", squareName(r, c));
 
@@ -1057,6 +951,7 @@ class ChessUI {
     clearInterval(this.timer);
     this.timer = setInterval(() => {
       if (this.clockSeconds.w === null || this.game.result) return;
+      if (this.mode === "online" && !this.opponentConnected) return;
       const color = this.game.turn;
       this.clockSeconds[color] = Math.max(0, this.clockSeconds[color] - 1);
       if (this.clockSeconds[color] === 0) {
@@ -1065,11 +960,9 @@ class ChessUI {
         this.thinkingBadge.classList.remove("show");
         this.playSound("end");
         this.render();
-        this.saveGame();
-      } else {
-        this.renderClocks();
-        this.saveGame();
-      }
+        this.saveLocalGame();
+        if (this.mode === "online") this.syncOnlineState();
+      } else this.renderClocks();
     }, 1000);
   }
 
@@ -1110,6 +1003,391 @@ class ChessUI {
     this.toast.textContent = message;
     this.toast.classList.add("show");
     this.toastTimer = setTimeout(() => this.toast.classList.remove("show"), 1800);
+  }
+
+  initFirebase() {
+    try {
+      if (!window.firebase) throw new Error("Firebase SDK did not load");
+      if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+      this.auth = firebase.auth();
+      this.db = firebase.database();
+      this.firebaseReadyPromise = this.auth.signInAnonymously().then(credential => {
+        this.uid = credential.user.uid;
+        this.firebaseReady = true;
+        return true;
+      }).catch(error => {
+        console.error(error);
+        this.showToast(`Firebase auth error: ${error.message}`);
+        return false;
+      });
+    } catch (error) {
+      console.error(error);
+      this.showToast("Online mode could not start");
+    }
+  }
+
+  generateRoomCode() {
+    const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    return Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+  }
+
+  async ensureFirebaseReady() {
+    if (this.firebaseReady && this.uid) return true;
+    if (this.firebaseReadyPromise) return this.firebaseReadyPromise;
+    this.showToast("Online mode could not connect to Firebase");
+    return false;
+  }
+
+  async createOnlineGame() {
+    if (this.roomRef) {
+      this.showToast("Leave the current online game first");
+      return;
+    }
+    if (!await this.ensureFirebaseReady()) return;
+    this.setOnlineBusy(true);
+    try {
+      let code;
+      for (let tries = 0; tries < 8; tries++) {
+        code = this.generateRoomCode();
+        const snap = await this.db.ref(`rooms/${code}`).once("value");
+        if (!snap.exists()) break;
+        code = null;
+      }
+      if (!code) throw new Error("No unused room code was available");
+
+      this.game.reset();
+      this.modeSelect.value = "online";
+      this.mode = "online";
+      this.roomCode = code;
+      this.roomRef = this.db.ref(`rooms/${code}`);
+      this.onlineColor = "w";
+      this.isRoomCreator = true;
+      this.opponentConnected = false;
+      this.onlineVersion = 0;
+      this.flipped = false;
+      this.selected = null;
+      this.selectedMoves = [];
+      this.pendingPromotion = null;
+      this.clockHistory = [];
+      const minutes = Number(this.clockSelect.value);
+      this.clockSeconds = minutes ? { w: minutes * 60, b: minutes * 60 } : { w: null, b: null };
+
+      const room = {
+        creatorUid: this.uid,
+        whiteUid: this.uid,
+        active: true,
+        status: "waiting",
+        stateVersion: 0,
+        createdAt: firebase.database.ServerValue.TIMESTAMP,
+        updatedAt: firebase.database.ServerValue.TIMESTAMP,
+        state: this.exportOnlineState()
+      };
+      await this.roomRef.set(room);
+      const presenceRef = this.roomRef.child(`presence/${this.uid}`);
+      await presenceRef.onDisconnect().remove();
+      await presenceRef.set(true);
+      this.attachRoomListener();
+      this.showRoomCard();
+      this.updatePlayerNames();
+      this.updateSetupVisibility();
+      this.render();
+      history.replaceState({}, "", `${location.pathname}?game=${code}`);
+      this.showToast("Online room created");
+    } catch (error) {
+      console.error(error);
+      await this.detachOnlineRoom(false);
+      this.showToast("Could not create the online room");
+    } finally {
+      this.setOnlineBusy(false);
+    }
+  }
+
+  async joinOnlineGame(rawCode) {
+    if (this.roomRef) {
+      this.showToast("Leave the current online game first");
+      return;
+    }
+    if (!await this.ensureFirebaseReady()) return;
+    const code = String(rawCode || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (code.length !== 6) { this.showToast("Enter a valid 6-character code"); return; }
+    this.setOnlineBusy(true);
+    try {
+      const ref = this.db.ref(`rooms/${code}`);
+      const snap = await ref.once("value");
+      if (!snap.exists() || snap.val().active === false) throw new Error("expired");
+      const room = snap.val();
+      let color = "w";
+
+      if (room.whiteUid !== this.uid) {
+        color = "b";
+        const claim = await ref.child("blackUid").transaction(currentUid => {
+          if (currentUid === null || currentUid === this.uid) return this.uid;
+          return undefined;
+        });
+        if (!claim.committed || claim.snapshot.val() !== this.uid) throw new Error("full");
+      }
+
+      this.modeSelect.value = "online";
+      this.mode = "online";
+      this.roomCode = code;
+      this.roomRef = ref;
+      this.isRoomCreator = room.creatorUid === this.uid;
+      this.onlineColor = color;
+      this.onlineVersion = Number(room.stateVersion) || 0;
+      const presenceRef = ref.child(`presence/${this.uid}`);
+      await presenceRef.onDisconnect().remove();
+      if (color === "b") await ref.child("blackUid").onDisconnect().remove();
+      await presenceRef.set(true);
+      if (color === "b") await ref.child("status").set("playing");
+      this.flipped = color === "b";
+      this.attachRoomListener();
+      this.showRoomCard();
+      this.updatePlayerNames();
+      history.replaceState({}, "", `${location.pathname}?game=${code}`);
+      this.showToast(`Joined room ${code}`);
+    } catch (error) {
+      console.error(error);
+      await this.detachOnlineRoom(false);
+      this.showToast(error.message === "full" ? "This room already has two players" :
+        error.message === "expired" ? "This game link has expired" : "Could not join this room");
+    } finally {
+      this.setOnlineBusy(false);
+    }
+  }
+
+  attachRoomListener() {
+    if (!this.roomRef) return;
+    this.roomListener = this.roomRef.on("value", snapshot => {
+      if (!snapshot.exists() || snapshot.val().active === false) {
+        this.handleExpiredRoom();
+        return;
+      }
+      const room = snapshot.val();
+      const opponentUid = this.onlineColor === "w" ? room.blackUid : room.whiteUid;
+      this.opponentConnected = Boolean(opponentUid && room.presence?.[opponentUid]);
+      const incomingVersion = Number(room.stateVersion) || 0;
+      const shouldImportState = room.state && incomingVersion >= this.onlineVersion &&
+        !(this.onlineSyncing && incomingVersion === this.onlineVersion);
+      if (shouldImportState) {
+        this.applyingRemoteState = true;
+        this.importOnlineState(room.state);
+        this.onlineVersion = incomingVersion;
+        this.applyingRemoteState = false;
+      }
+      this.updateOnlineStatus();
+      this.updatePlayerNames();
+      this.render();
+      this.saveLocalGame();
+    });
+  }
+
+  exportOnlineState() {
+    return {
+      game: this.game.snapshot(),
+      history: this.game.history,
+      clockSeconds: this.clockSeconds,
+      clockHistory: this.clockHistory
+    };
+  }
+
+  importOnlineState(data) {
+    if (data.game) this.game.restore(data.game);
+    this.game.history = Array.isArray(data.history) ? data.history : [];
+    this.clockSeconds = data.clockSeconds || { w: null, b: null };
+    this.clockHistory = Array.isArray(data.clockHistory) ? data.clockHistory : [];
+    this.selected = null;
+    this.selectedMoves = [];
+  }
+
+  async syncOnlineState(rollbackState = null) {
+    if (!this.roomRef || !this.roomCode) return;
+    const expectedVersion = this.onlineVersion;
+    const nextState = this.exportOnlineState();
+    try {
+      const result = await this.roomRef.transaction(room => {
+        if (!room || room.active === false) return undefined;
+        const isParticipant = room.whiteUid === this.uid || room.blackUid === this.uid;
+        const currentVersion = Number(room.stateVersion) || 0;
+        if (!isParticipant || currentVersion !== expectedVersion) return undefined;
+
+        const oldMoveCount = room.state?.game?.moveList?.length || 0;
+        const newMoveCount = nextState.game?.moveList?.length || 0;
+        if (newMoveCount > oldMoveCount && room.state?.game?.turn !== this.onlineColor) {
+          return undefined;
+        }
+
+        room.state = nextState;
+        room.stateVersion = expectedVersion + 1;
+        room.status = nextState.game?.result ? "finished" : "playing";
+        room.updatedAt = firebase.database.ServerValue.TIMESTAMP;
+        room.lastMoverUid = this.uid;
+        return room;
+      }, undefined, false);
+
+      if (!result.committed) {
+        const serverRoom = result.snapshot.val();
+        if (serverRoom?.state) {
+          this.importOnlineState(serverRoom.state);
+          this.onlineVersion = Number(serverRoom.stateVersion) || this.onlineVersion;
+        } else if (rollbackState) {
+          this.importOnlineState(rollbackState);
+        }
+        this.showToast("Move was not accepted. Board refreshed.");
+        return false;
+      }
+
+      this.onlineVersion = expectedVersion + 1;
+      return true;
+    } catch (error) {
+      console.error(error);
+      if (rollbackState) this.importOnlineState(rollbackState);
+      this.showToast("Move could not be synced. Please try again.");
+      return false;
+    }
+  }
+
+  setOnlineBusy(busy) {
+    this.onlineBusy = busy;
+    this.createOnlineBtn.disabled = busy;
+    this.joinOnlineBtn.disabled = busy;
+  }
+
+  updateOnlineStatus() {
+    if (!this.roomCode) return;
+    if (this.onlineSyncing) {
+      this.onlineStatusText.textContent = "Syncing move…";
+    } else if (!this.opponentConnected) {
+      this.onlineStatusText.textContent = this.isRoomCreator
+        ? "Waiting for your friend to join…"
+        : "Waiting for the creator to reconnect…";
+    } else if (this.game.result) {
+      this.onlineStatusText.textContent = "Game finished";
+    } else if (this.game.turn === this.onlineColor) {
+      this.onlineStatusText.textContent = `${this.onlineColor === "w" ? "You are White" : "You are Black"} • Your move`;
+    } else {
+      this.onlineStatusText.textContent = this.onlineColor === "b"
+        ? "You are Black • Creator's move"
+        : "You are White • Friend's move";
+    }
+  }
+
+  showRoomCard() {
+    this.roomCard.classList.remove("hidden");
+    this.roomCodeText.textContent = this.roomCode || "------";
+    this.exitOnlineBtn.textContent = this.isRoomCreator ? "Exit & expire room" : "Leave online game";
+  }
+
+  async copyRoomLink() {
+    if (!this.roomCode) return;
+    if (location.protocol === "file:") {
+      this.showToast("Open the game from a web server to share it");
+      return;
+    }
+    const link = `${location.origin}${location.pathname}?game=${this.roomCode}`;
+    try { await navigator.clipboard.writeText(link); this.showToast("Invite link copied"); }
+    catch { this.showToast(link); }
+  }
+
+  async exitOnlineGame() {
+    if (!this.roomRef) return;
+    try {
+      if (this.isRoomCreator) await this.roomRef.remove();
+      else {
+        await this.roomRef.child(`presence/${this.uid}`).remove();
+        await this.roomRef.child("blackUid").transaction(currentUid =>
+          currentUid === this.uid ? null : undefined);
+      }
+    } catch (error) { console.error(error); }
+    await this.detachOnlineRoom(false);
+    history.replaceState({}, "", location.pathname);
+    this.modeSelect.value = "computer";
+    this.mode = "computer";
+    this.roomCard.classList.add("hidden");
+    this.updateSetupVisibility();
+    this.startNewGame();
+  }
+
+  async detachOnlineRoom(removePresence = true) {
+    if (this.roomRef && this.roomListener) this.roomRef.off("value", this.roomListener);
+    if (removePresence && this.roomRef && this.uid) {
+      try { await this.roomRef.child(`presence/${this.uid}`).remove(); } catch {}
+      if (this.onlineColor === "b") {
+        try {
+          await this.roomRef.child("blackUid").transaction(currentUid =>
+            currentUid === this.uid ? null : undefined);
+        } catch {}
+      }
+    }
+    this.roomListener = null;
+    this.roomRef = null;
+    this.roomCode = null;
+    this.onlineColor = null;
+    this.isRoomCreator = false;
+    this.opponentConnected = false;
+    this.onlineSyncing = false;
+    this.onlineVersion = 0;
+  }
+
+  handleExpiredRoom() {
+    if (this.roomRef && this.roomListener) this.roomRef.off("value", this.roomListener);
+    this.roomRef = null;
+    this.roomCode = null;
+    this.opponentConnected = false;
+    this.onlineStatusText.textContent = "This room has expired.";
+    this.showToast("The creator ended this online game");
+    this.render();
+  }
+
+  async tryJoinFromUrl() {
+    const code = new URLSearchParams(location.search).get("game");
+    if (!code) return;
+    this.modeSelect.value = "online";
+    this.updateSetupVisibility();
+    this.roomCodeInput.value = code.toUpperCase();
+    await this.joinOnlineGame(code);
+  }
+
+  saveLocalGame() {
+    if (this.applyingRemoteState) return;
+    try {
+      localStorage.setItem(LOCAL_SAVE_KEY, JSON.stringify({
+        game: this.game.snapshot(), history: this.game.history,
+        mode: this.mode, humanColor: this.humanColor, aiColor: this.aiColor,
+        flipped: this.flipped, clockSeconds: this.clockSeconds, clockHistory: this.clockHistory,
+        settings: { mode: this.modeSelect.value, color: this.colorSelect.value, difficulty: this.difficultySelect.value,
+          clock: this.clockSelect.value, theme: this.themeSelect.value, sound: this.soundToggle.checked, hints: this.hintToggle.checked }
+      }));
+    } catch (error) { console.warn("Could not save game", error); }
+  }
+
+  restoreLocalGame() {
+    try {
+      const raw = localStorage.getItem(LOCAL_SAVE_KEY);
+      if (!raw) return false;
+      const data = JSON.parse(raw);
+      if (!data.game) return false;
+      this.game.restore(data.game);
+      this.game.history = Array.isArray(data.history) ? data.history : [];
+      this.mode = data.mode === "online" ? "computer" : (data.mode || "computer");
+      this.humanColor = data.humanColor || "w";
+      this.aiColor = data.aiColor || opposite(this.humanColor);
+      this.flipped = Boolean(data.flipped);
+      this.clockSeconds = data.clockSeconds || { w: null, b: null };
+      this.clockHistory = data.clockHistory || [];
+      if (data.settings) {
+        this.modeSelect.value = this.mode;
+        this.colorSelect.value = data.settings.color || "w";
+        this.difficultySelect.value = data.settings.difficulty || "medium";
+        this.clockSelect.value = data.settings.clock || "0";
+        this.themeSelect.value = data.settings.theme || "classic";
+        this.soundToggle.checked = data.settings.sound !== false;
+        this.hintToggle.checked = data.settings.hints !== false;
+      }
+      this.updatePlayerNames();
+      this.updateSetupVisibility();
+      this.render();
+      return true;
+    } catch (error) { console.warn("Could not restore game", error); return false; }
   }
 
   playSound(type) {

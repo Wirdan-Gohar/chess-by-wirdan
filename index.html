@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#151922" />
   <title>Royal Board Chess</title>
-  <link rel="stylesheet" href="style.css?v=8" />
+  <link rel="stylesheet" href="style.css?v=11" />
 </head>
 <body>
   <main class="app-shell">
@@ -43,6 +43,7 @@
           <select id="modeSelect">
             <option value="computer">Play vs computer</option>
             <option value="human">Two players</option>
+            <option value="online">Play online with friend</option>
           </select>
         </label>
 
@@ -84,6 +85,22 @@
         </label>
 
         <button class="primary-btn" id="newGameBtn">Start new game</button>
+
+        <div class="online-panel" id="onlinePanel">
+          <div class="online-divider"><span>ONLINE ROOM</span></div>
+          <button class="primary-btn" id="createOnlineBtn">Create game as White</button>
+          <div class="join-row">
+            <input id="roomCodeInput" maxlength="6" placeholder="Enter game code" autocomplete="off" />
+            <button id="joinOnlineBtn">Join</button>
+          </div>
+          <div class="room-card hidden" id="roomCard">
+            <small>ROOM CODE</small>
+            <strong id="roomCodeText">------</strong>
+            <button id="copyRoomLinkBtn">Copy invite link</button>
+            <button id="exitOnlineBtn" class="danger-btn">Exit & expire room</button>
+            <p id="onlineStatusText">Waiting for opponent…</p>
+          </div>
+        </div>
 
         <div class="feature-note">
           <strong>Controls</strong>
@@ -158,7 +175,7 @@
     </div>
   </div>
 
-  <div class="check-banner" id="checkBanner" role="status" aria-live="assertive"></div>
+  <div class="check-banner" id="checkBanner" role="status" aria-live="assertive">CHECK!</div>
 
   <div class="modal-backdrop hidden" id="gameOverModal" role="dialog" aria-modal="true" aria-labelledby="gameOverTitle">
     <div class="modal-card game-over-card">
@@ -175,6 +192,9 @@
 
   <div class="toast" id="toast"></div>
 
-  <script src="script.js?v=8"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+  <script src="script.js?v=12"></script>
 </body>
 </html>

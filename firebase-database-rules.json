@@ -1,0 +1,11 @@
+{
+  "rules": {
+    "rooms": {
+      "$room": {
+        ".read": "auth != null",
+        ".write": "auth != null && (!data.exists() || data.child('creatorUid').val() === auth.uid || data.child('whiteUid').val() === auth.uid || data.child('blackUid').val() === auth.uid || newData.child('whiteUid').val() === auth.uid || newData.child('blackUid').val() === auth.uid)",
+        ".validate": "!newData.exists() || (newData.hasChildren(['creatorUid','whiteUid','active','state','stateVersion']) && newData.child('creatorUid').isString() && newData.child('whiteUid').isString() && newData.child('active').isBoolean() && newData.child('stateVersion').isNumber())"
+      }
+    }
+  }
+}

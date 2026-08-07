@@ -7,9 +7,9 @@ Files:
 - script.js
 
 HOW TO RUN
-1. Put all three files in the same folder.
-2. Double-click index.html.
-3. The game runs completely in your browser and does not need a server or internet connection.
+1. Put the project files in the same folder.
+2. For offline play, you can double-click index.html.
+3. For online multiplayer, host the files on GitHub Pages or run a local web server. Online mode requires internet access and will not create a usable invite link from a file:// URL.
 
 FEATURES
 - Human vs computer
@@ -31,10 +31,10 @@ FEATURES
 NOTE
 The computer opponent uses a lightweight minimax engine written in JavaScript. It is designed for smooth browser play, not grandmaster-strength analysis.
 
-Update: Move-marker positioning fix
-- Legal move dots are now explicitly centered at every board size.
-- Capture rings now use fixed square-relative dimensions for consistent alignment.
 
-Autosave
---------
-The current game, move history, board orientation, settings, and clock are saved automatically. Reloading the page restores the game. Clicking Start new game replaces the saved game.
+ONLINE MULTIPLAYER SETUP
+1. Firebase Authentication: enable Anonymous sign-in.
+2. Realtime Database: open Rules, paste firebase-database-rules.json, and Publish.
+3. Add wirdan-gohar.github.io to Authentication > Settings > Authorized domains.
+4. Upload index.html, style.css, and script.js to GitHub.
+5. Open the site, choose Play online with friend, then Create online game.
