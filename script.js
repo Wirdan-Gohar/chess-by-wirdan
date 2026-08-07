@@ -62,14 +62,18 @@ class ChessGame {
   }
 
   restore(state) {
-    this.board = state.board.map(row => row.map(clonePiece));
-    this.turn = state.turn;
+    const storedBoard = Array.isArray(state?.board) ? state.board : [];
+    this.board = Array.from({ length: 8 }, (_, r) =>
+      Array.from({ length: 8 }, (_, c) => clonePiece(storedBoard[r]?.[c])));
+    this.turn = state?.turn === "b" ? "b" : "w";
     this.enPassant = state.enPassant ? { ...state.enPassant } : null;
-    this.halfmove = state.halfmove;
-    this.fullmove = state.fullmove;
+    this.halfmove = Number(state.halfmove) || 0;
+    this.fullmove = Number(state.fullmove) || 1;
     this.lastMove = state.lastMove ? JSON.parse(JSON.stringify(state.lastMove)) : null;
-    this.moveList = [...state.moveList];
-    this.positionHistory = [...state.positionHistory];
+    this.moveList = Array.isArray(state.moveList) ? [...state.moveList] : [];
+    this.positionHistory = Array.isArray(state.positionHistory) && state.positionHistory.length
+      ? [...state.positionHistory]
+      : [this.positionKey()];
     this.result = state.result ? { ...state.result } : null;
   }
 
@@ -414,6 +418,8 @@ class ChessUI {
     this.roomCode = null;
     this.roomRef = null;
     this.roomListener = null;
+    this.roomPollTimer = null;
+    this.roomPollInFlight = false;
     this.onlineColor = null;
     this.isRoomCreator = false;
     this.opponentConnected = false;
@@ -421,6 +427,7 @@ class ChessUI {
     this.onlineBusy = false;
     this.onlineSyncing = false;
     this.onlineVersion = 0;
+    this.hasImportedOnlineState = false;
     this.cacheDom();
     this.bindEvents();
     this.initFirebase();
@@ -1064,6 +1071,7 @@ class ChessUI {
       this.isRoomCreator = true;
       this.opponentConnected = false;
       this.onlineVersion = 0;
+      this.hasImportedOnlineState = true;
       this.flipped = false;
       this.selected = null;
       this.selectedMoves = [];
@@ -1083,9 +1091,6 @@ class ChessUI {
         state: this.exportOnlineState()
       };
       await this.roomRef.set(room);
-      const presenceRef = this.roomRef.child(`presence/${this.uid}`);
-      await presenceRef.onDisconnect().remove();
-      await presenceRef.set(true);
       this.attachRoomListener();
       this.showRoomCard();
       this.updatePlayerNames();
@@ -1134,15 +1139,19 @@ class ChessUI {
       this.isRoomCreator = room.creatorUid === this.uid;
       this.onlineColor = color;
       this.onlineVersion = Number(room.stateVersion) || 0;
-      const presenceRef = ref.child(`presence/${this.uid}`);
-      await presenceRef.onDisconnect().remove();
-      if (color === "b") await ref.child("blackUid").onDisconnect().remove();
-      await presenceRef.set(true);
-      if (color === "b") await ref.child("status").set("playing");
+      if (room.state) this.importOnlineState(room.state);
+      this.hasImportedOnlineState = Boolean(room.state);
+      this.opponentConnected = Boolean(room.whiteUid);
+      if (color === "b") {
+        try { await ref.child("blackUid").onDisconnect().remove(); }
+        catch (error) { console.warn("Could not register room disconnect cleanup", error); }
+      }
       this.flipped = color === "b";
-      this.attachRoomListener();
       this.showRoomCard();
       this.updatePlayerNames();
+      this.updateOnlineStatus();
+      this.render();
+      this.attachRoomListener();
       history.replaceState({}, "", `${location.pathname}?game=${code}`);
       this.showToast(`Joined room ${code}`);
     } catch (error) {
@@ -1157,44 +1166,97 @@ class ChessUI {
 
   attachRoomListener() {
     if (!this.roomRef) return;
-    this.roomListener = this.roomRef.on("value", snapshot => {
-      if (!snapshot.exists() || snapshot.val().active === false) {
-        this.handleExpiredRoom();
-        return;
-      }
-      const room = snapshot.val();
-      const opponentUid = this.onlineColor === "w" ? room.blackUid : room.whiteUid;
-      this.opponentConnected = Boolean(opponentUid && room.presence?.[opponentUid]);
-      const incomingVersion = Number(room.stateVersion) || 0;
-      const shouldImportState = room.state && incomingVersion >= this.onlineVersion &&
-        !(this.onlineSyncing && incomingVersion === this.onlineVersion);
-      if (shouldImportState) {
-        this.applyingRemoteState = true;
-        this.importOnlineState(room.state);
-        this.onlineVersion = incomingVersion;
-        this.applyingRemoteState = false;
-      }
-      this.updateOnlineStatus();
-      this.updatePlayerNames();
+    const listener = snapshot => this.applyRoomSnapshot(snapshot);
+    this.roomListener = this.roomRef.on("value", listener, error => {
+      console.error(error);
+      this.onlineStatusText.textContent = "Realtime connection interrupted; reconnecting…";
+      this.showToast("Realtime connection interrupted");
+    });
+
+    // Safari can occasionally stall Firebase's long-lived localhost transport.
+    // An immediate read and a small polling fallback keep both boards converged;
+    // the normal listener still delivers moves instantly when available.
+    this.roomRef.once("value").then(snapshot => this.applyRoomSnapshot(snapshot)).catch(error => {
+      console.error(error);
+      this.onlineStatusText.textContent = "Could not read the online room.";
+    });
+    this.startRoomPolling();
+  }
+
+  applyRoomSnapshot(snapshot) {
+    if (!snapshot.exists() || snapshot.val().active === false) {
+      this.handleExpiredRoom();
+      return;
+    }
+
+    const room = snapshot.val();
+    const wasConnected = this.opponentConnected;
+    const opponentUid = this.onlineColor === "w" ? room.blackUid : room.whiteUid;
+    this.opponentConnected = Boolean(opponentUid);
+    const incomingVersion = Number(room.stateVersion) || 0;
+    const shouldImportState = room.state &&
+      (!this.hasImportedOnlineState || incomingVersion > this.onlineVersion) &&
+      !(this.onlineSyncing && incomingVersion === this.onlineVersion);
+
+    if (shouldImportState) {
+      this.applyingRemoteState = true;
+      this.importOnlineState(room.state);
+      this.onlineVersion = incomingVersion;
+      this.hasImportedOnlineState = true;
+      this.applyingRemoteState = false;
+    }
+
+    this.updateOnlineStatus();
+    this.updatePlayerNames();
+    if (shouldImportState || wasConnected !== this.opponentConnected) {
       this.render();
       this.saveLocalGame();
-    });
+    }
+  }
+
+  startRoomPolling() {
+    clearInterval(this.roomPollTimer);
+    this.roomPollTimer = setInterval(async () => {
+      if (!this.roomRef || this.roomPollInFlight) return;
+      const activeRef = this.roomRef;
+      this.roomPollInFlight = true;
+      try {
+        const snapshot = await activeRef.once("value");
+        if (this.roomRef === activeRef) this.applyRoomSnapshot(snapshot);
+      } catch (error) {
+        console.error(error);
+        if (this.roomRef === activeRef) {
+          this.onlineStatusText.textContent = "Reconnecting to online game…";
+        }
+      } finally {
+        this.roomPollInFlight = false;
+      }
+    }, 1000);
   }
 
   exportOnlineState() {
+    const game = this.game.snapshot();
+    // Realtime Database deletes null array entries. False is a stable empty-
+    // square sentinel and ChessGame.restore converts it back to null.
+    game.board = game.board.map(row => row.map(piece => piece || false));
     return {
-      game: this.game.snapshot(),
-      history: this.game.history,
-      clockSeconds: this.clockSeconds,
-      clockHistory: this.clockHistory
+      game,
+      clockSeconds: {
+        w: this.clockSeconds.w ?? false,
+        b: this.clockSeconds.b ?? false
+      }
     };
   }
 
   importOnlineState(data) {
     if (data.game) this.game.restore(data.game);
-    this.game.history = Array.isArray(data.history) ? data.history : [];
-    this.clockSeconds = data.clockSeconds || { w: null, b: null };
-    this.clockHistory = Array.isArray(data.clockHistory) ? data.clockHistory : [];
+    this.game.history = [];
+    const clocks = data.clockSeconds || {};
+    this.clockSeconds = {
+      w: typeof clocks.w === "number" ? clocks.w : null,
+      b: typeof clocks.b === "number" ? clocks.b : null
+    };
+    this.clockHistory = [];
     this.selected = null;
     this.selectedMoves = [];
   }
@@ -1293,7 +1355,6 @@ class ChessUI {
     try {
       if (this.isRoomCreator) await this.roomRef.remove();
       else {
-        await this.roomRef.child(`presence/${this.uid}`).remove();
         await this.roomRef.child("blackUid").transaction(currentUid =>
           currentUid === this.uid ? null : undefined);
       }
@@ -1307,16 +1368,15 @@ class ChessUI {
     this.startNewGame();
   }
 
-  async detachOnlineRoom(removePresence = true) {
+  async detachOnlineRoom(releaseSeat = true) {
+    clearInterval(this.roomPollTimer);
+    this.roomPollTimer = null;
     if (this.roomRef && this.roomListener) this.roomRef.off("value", this.roomListener);
-    if (removePresence && this.roomRef && this.uid) {
-      try { await this.roomRef.child(`presence/${this.uid}`).remove(); } catch {}
-      if (this.onlineColor === "b") {
-        try {
-          await this.roomRef.child("blackUid").transaction(currentUid =>
-            currentUid === this.uid ? null : undefined);
-        } catch {}
-      }
+    if (releaseSeat && this.roomRef && this.uid && this.onlineColor === "b") {
+      try {
+        await this.roomRef.child("blackUid").transaction(currentUid =>
+          currentUid === this.uid ? null : undefined);
+      } catch {}
     }
     this.roomListener = null;
     this.roomRef = null;
@@ -1326,9 +1386,12 @@ class ChessUI {
     this.opponentConnected = false;
     this.onlineSyncing = false;
     this.onlineVersion = 0;
+    this.hasImportedOnlineState = false;
   }
 
   handleExpiredRoom() {
+    clearInterval(this.roomPollTimer);
+    this.roomPollTimer = null;
     if (this.roomRef && this.roomListener) this.roomRef.off("value", this.roomListener);
     this.roomRef = null;
     this.roomCode = null;
