@@ -495,6 +495,22 @@ button:disabled { opacity: .42; cursor: not-allowed; }
   transition: .22s ease;
 }
 .toast.show { opacity: 1; transform: translate(-50%,0); }
+.toast.message-toast {
+  right: 22px;
+  left: auto;
+  bottom: 28px;
+  width: min(360px, calc(100% - 32px));
+  padding: 15px 18px;
+  border-color: rgba(241,200,106,.45);
+  border-radius: 14px;
+  background: #202834;
+  font-size: .92rem;
+  font-weight: 650;
+  line-height: 1.45;
+  white-space: pre-line;
+  transform: translateX(28px);
+}
+.toast.message-toast.show { transform: translateX(0); }
 
 @media (max-width: 1100px) {
   .game-layout { grid-template-columns: minmax(180px, 240px) minmax(380px, 1fr); }
@@ -557,5 +573,20 @@ button:disabled { opacity: .42; cursor: not-allowed; }
 .chat-form input { min-width: 0; padding: 10px; border: 1px solid rgba(255,255,255,.09); border-radius: 9px; color: var(--text); background: #11161e; outline: none; }
 .chat-form input:focus { border-color: rgba(241,200,106,.75); }
 .chat-form button { padding: 9px 11px; }
+.chat-form button:disabled { opacity: .45; cursor: not-allowed; }
 .game-over-message { margin: 0 0 18px; color: var(--muted); line-height: 1.5; }
 .game-over-actions { display: flex; justify-content: center; gap: 9px; }
+.spectator-actions { margin-top: 14px; padding: 12px; border: 1px solid rgba(241,200,106,.22); border-radius: 10px; background: rgba(241,200,106,.06); }
+.spectator-actions strong { display: block; margin-bottom: 6px; color: var(--accent); font-size: .75rem; letter-spacing: .08em; }
+.spectator-actions p { margin: 0 0 10px; color: var(--muted); font-size: .75rem; line-height: 1.45; }
+.spectator-actions button { width: 100%; }
+
+body.spectator-mode .topbar { display: none; }
+body.spectator-mode .setup-panel { display: none; }
+body.spectator-mode .control-grid { display: none; }
+body.spectator-mode .game-panel > :not(.spectator-actions):not(.chat-section) { display: none; }
+body.spectator-mode .game-layout { grid-template-columns: minmax(400px, 1fr) minmax(250px, 310px); width: min(950px, 100%); margin-inline: auto; }
+
+@media (max-width: 760px) {
+  body.spectator-mode .game-layout { grid-template-columns: 1fr; }
+}

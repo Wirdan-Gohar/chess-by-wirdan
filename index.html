@@ -1,12 +1,14 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#151922" />
   <title>Royal Board Chess</title>
-  <link rel="stylesheet" href="style.css?v=12" />
+  <link rel="stylesheet" href="style.css?v=14" />
 </head>
+
 <body>
   <main class="app-shell">
     <header class="topbar">
@@ -29,7 +31,7 @@
     </header>
 
     <section class="game-layout">
-      <aside class="panel setup-panel">
+      <aside class="panel setup-panel" id="setupPanel">
         <div class="panel-title">
           <span class="panel-icon">⚙</span>
           <div>
@@ -159,11 +161,17 @@
           </div>
         </div>
 
-        <div class="control-grid">
+        <div class="control-grid" id="gameControls">
           <button id="undoBtn">↶ <span>Undo</span></button>
           <button id="flipBtn">⇅ <span>Flip</span></button>
           <button id="drawBtn">½ <span>Draw</span></button>
           <button id="resignBtn" class="danger-btn">⚑ <span>Resign</span></button>
+        </div>
+
+        <div class="spectator-actions hidden" id="spectatorActions">
+          <strong>SPECTATOR MODE • CHAT ONLY</strong>
+          <p>You are watching this game. Create your own game to choose computer, online friend, or two-player mode.</p>
+          <button class="primary-btn" id="spectatorCreateGameBtn">Create your own game</button>
         </div>
 
         <section class="chat-section hidden" id="chatSection" aria-label="Room chat">
@@ -176,14 +184,15 @@
           </div>
           <form class="chat-form" id="chatForm">
             <input id="chatInput" maxlength="300" placeholder="Send a message…" autocomplete="off" />
-            <button type="submit">Send</button>
+            <button type="submit" id="chatSendBtn">Send</button>
           </form>
         </section>
       </aside>
     </section>
   </main>
 
-  <div class="modal-backdrop hidden" id="promotionModal" role="dialog" aria-modal="true" aria-label="Choose promotion piece">
+  <div class="modal-backdrop hidden" id="promotionModal" role="dialog" aria-modal="true"
+    aria-label="Choose promotion piece">
     <div class="modal-card">
       <p>Promote your pawn</p>
       <h2>Choose a piece</h2>
@@ -191,7 +200,8 @@
     </div>
   </div>
 
-  <div class="modal-backdrop hidden" id="restartRequestModal" role="dialog" aria-modal="true" aria-labelledby="restartRequestTitle">
+  <div class="modal-backdrop hidden" id="restartRequestModal" role="dialog" aria-modal="true"
+    aria-labelledby="restartRequestTitle">
     <div class="modal-card">
       <p>RESTART REQUEST</p>
       <h2 id="restartRequestTitle">Play again with swapped colors?</h2>
@@ -203,7 +213,20 @@
     </div>
   </div>
 
-  <div class="check-banner" id="checkBanner" role="status" aria-live="assertive">CHECK!</div>
+  <div class="modal-backdrop hidden" id="undoRequestModal" role="dialog" aria-modal="true"
+    aria-labelledby="undoRequestTitle">
+    <div class="modal-card">
+      <p>UNDO REQUEST</p>
+      <h2 id="undoRequestTitle">Allow the last move to be undone?</h2>
+      <div class="game-over-message">Your opponent wants to return the game to the position before the last move.</div>
+      <div class="game-over-actions">
+        <button class="primary-btn" id="acceptUndoBtn">Approve undo</button>
+        <button id="declineUndoBtn">Decline</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- <div class="check-banner" id="checkBanner" role="status" aria-live="assertive">CHECK!</div> -->
 
   <div class="modal-backdrop hidden" id="gameOverModal" role="dialog" aria-modal="true" aria-labelledby="gameOverTitle">
     <div class="modal-card game-over-card">
@@ -223,6 +246,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
-  <script src="script.js?v=16"></script>
+  <script src="script.js?v=21"></script>
 </body>
+
 </html>

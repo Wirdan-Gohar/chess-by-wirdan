@@ -431,6 +431,9 @@ class ChessUI {
     this.isSpectator = false;
     this.currentRoom = null;
     this.mutedUids = new Set();
+    this.seenChatMessageIds = new Set();
+    this.hasLoadedChat = false;
+    this.spectatorChatEnabled = true;
     this.cacheDom();
     this.bindEvents();
     this.initFirebase();
@@ -448,8 +451,10 @@ class ChessUI {
       "whitePlayerCard","blackPlayerCard","thinkingBadge","promotionModal","promotionOptions","toast",
       "onlinePanel","createOnlineBtn","roomCodeInput","joinOnlineBtn","roomCard","roomCodeText",
       "copyRoomLinkBtn","copySpectatorLinkBtn","restartOnlineBtn","exitOnlineBtn","onlineStatusText",
-      "chatSection","chatMessages","chatForm","chatInput","chatRoleLabel",
-      "restartRequestModal","acceptRestartBtn","declineRestartBtn"
+      "chatSection","chatMessages","chatForm","chatInput","chatSendBtn","chatRoleLabel",
+      "restartRequestModal","acceptRestartBtn","declineRestartBtn",
+      "undoRequestModal","acceptUndoBtn","declineUndoBtn",
+      "setupPanel","gameControls","spectatorActions","spectatorCreateGameBtn"
     ];
     for (const id of ids) this[id] = document.getElementById(id);
   }
@@ -477,6 +482,9 @@ class ChessUI {
     this.chatForm.addEventListener("submit", event => { event.preventDefault(); this.sendChatMessage(); });
     this.acceptRestartBtn.addEventListener("click", () => this.respondToRestart(true));
     this.declineRestartBtn.addEventListener("click", () => this.respondToRestart(false));
+    this.acceptUndoBtn.addEventListener("click", () => this.respondToUndo(true));
+    this.declineUndoBtn.addEventListener("click", () => this.respondToUndo(false));
+    this.spectatorCreateGameBtn.addEventListener("click", () => this.exitOnlineGame(true));
   }
 
   updateSetupVisibility() {
@@ -730,7 +738,7 @@ class ChessUI {
 
   undo() {
     if (this.mode === "online") {
-      this.showToast("Undo is unavailable in online games");
+      this.requestOnlineUndo();
       return;
     }
     if (this.aiThinking || !this.game.history.length) return;
@@ -793,7 +801,14 @@ class ChessUI {
     this.renderCaptured();
     this.renderClocks();
     this.lastMoveText.textContent = this.game.moveList.at(-1) || "No moves yet";
-    this.undoBtn.disabled = this.mode === "online" || !this.game.history.length || this.aiThinking;
+    if (this.mode === "online") {
+      const undoPending = Boolean(this.currentRoom?.undoRequest);
+      this.undoBtn.querySelector("span").textContent = undoPending ? "Undo requested…" : "Request undo";
+      this.undoBtn.disabled = this.isSpectator || !this.opponentConnected || !this.currentRoom?.undoState || undoPending || this.onlineSyncing;
+    } else {
+      this.undoBtn.querySelector("span").textContent = "Undo";
+      this.undoBtn.disabled = !this.game.history.length || this.aiThinking;
+    }
     const waitingOnline = this.mode === "online" && (!this.opponentConnected || this.isSpectator);
     this.drawBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
     this.resignBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
@@ -1021,11 +1036,19 @@ class ChessUI {
     }
   }
 
-  showToast(message) {
+  showToast(message, duration = 1800) {
     clearTimeout(this.toastTimer);
+    this.toast.classList.remove("message-toast");
     this.toast.textContent = message;
     this.toast.classList.add("show");
-    this.toastTimer = setTimeout(() => this.toast.classList.remove("show"), 1800);
+    this.toastTimer = setTimeout(() => this.toast.classList.remove("show"), duration);
+  }
+
+  showMessageToast(sender, message) {
+    clearTimeout(this.toastTimer);
+    this.toast.textContent = `New message from ${sender}\n${message}`;
+    this.toast.classList.add("message-toast", "show");
+    this.toastTimer = setTimeout(() => this.toast.classList.remove("show"), 2000);
   }
 
   initFirebase() {
@@ -1143,8 +1166,16 @@ class ChessUI {
       const room = snap.val();
       let color = null;
 
+      this.spectatorChatEnabled = true;
       if (asSpectator) {
-        await ref.child(`spectators/${this.uid}`).set(true);
+        try {
+          await ref.child(`spectators/${this.uid}`).set(true);
+        } catch (error) {
+          // Viewing only needs room read access. Do not eject a spectator when
+          // the deployed Firebase rules have not enabled spectator chat yet.
+          console.warn("Spectator chat registration was denied", error);
+          this.spectatorChatEnabled = false;
+        }
       } else if (room.whiteUid === this.uid) {
         color = "w";
       } else {
@@ -1161,12 +1192,14 @@ class ChessUI {
       this.roomCode = code;
       this.roomRef = ref;
       this.isSpectator = asSpectator;
+      this.seenChatMessageIds.clear();
+      this.hasLoadedChat = false;
       this.isRoomCreator = !asSpectator && room.creatorUid === this.uid;
       this.onlineColor = color;
       this.onlineVersion = Number(room.stateVersion) || 0;
       if (room.state) this.importOnlineState(room.state);
       this.hasImportedOnlineState = Boolean(room.state);
-      this.opponentConnected = Boolean(room.whiteUid && room.blackUid);
+      this.opponentConnected = Boolean(room.whiteUid && (room.blackUid || color === "b"));
       if (asSpectator) {
         try { await ref.child(`spectators/${this.uid}`).onDisconnect().remove(); }
         catch (error) { console.warn("Could not register spectator disconnect cleanup", error); }
@@ -1176,15 +1209,24 @@ class ChessUI {
       }
       this.flipped = color === "b";
       this.showRoomCard();
+      const spectatorChatUnavailable = asSpectator && !this.spectatorChatEnabled;
+      this.chatInput.disabled = spectatorChatUnavailable;
+      this.chatSendBtn.disabled = spectatorChatUnavailable;
+      this.chatInput.placeholder = spectatorChatUnavailable
+        ? "Publish Firebase spectator-chat rules to send messages"
+        : "Send a message…";
       this.updatePlayerNames();
       this.updateOnlineStatus();
       this.render();
       this.attachRoomListener();
-      history.replaceState({}, "", `${location.pathname}?game=${code}`);
-      this.showToast(asSpectator ? `Watching room ${code}` : `Joined room ${code}`);
+      history.replaceState({}, "", `${location.pathname}?game=${code}${asSpectator ? "&watch=1" : ""}`);
+      this.showToast(asSpectator
+        ? this.spectatorChatEnabled ? `Watching room ${code}` : `Watching room ${code} • chat is read-only`
+        : `Joined room ${code}`);
     } catch (error) {
       console.error(error);
       await this.detachOnlineRoom(false);
+      if (asSpectator) this.applySpectatorLayout(false);
       this.showToast(error.message === "full" ? "This room already has two players — use a spectator link to watch" :
         error.message === "expired" ? "This game link has expired" : "Could not join this room");
     } finally {
@@ -1228,8 +1270,10 @@ class ChessUI {
     this.opponentConnected = Boolean(room.whiteUid && room.blackUid);
     this.mutedUids = new Set(Object.keys(room.mutes?.[this.uid] || {}).filter(uid => room.mutes[this.uid][uid]));
     const incomingVersion = Number(room.stateVersion) || 0;
+    const spectatorMovesChanged = this.isSpectator && room.state?.game &&
+      JSON.stringify(room.state.game.moveList || []) !== JSON.stringify(this.game.moveList || []);
     const shouldImportState = room.state &&
-      (!this.hasImportedOnlineState || incomingVersion > this.onlineVersion) &&
+      (!this.hasImportedOnlineState || incomingVersion > this.onlineVersion || spectatorMovesChanged) &&
       !(this.onlineSyncing && incomingVersion === this.onlineVersion);
 
     if (shouldImportState) {
@@ -1246,6 +1290,8 @@ class ChessUI {
     }
 
     this.updateRestartRequest(room.restartRequest || null);
+    this.updateUndoRequest(room.undoRequest || null);
+    this.updatePlayerInviteButton();
     this.renderChat(room);
     this.updateOnlineStatus();
     this.updatePlayerNames();
@@ -1319,6 +1365,10 @@ class ChessUI {
           return undefined;
         }
 
+        if (newMoveCount > oldMoveCount) {
+          room.undoState = room.state;
+          delete room.undoRequest;
+        }
         room.state = nextState;
         room.stateVersion = expectedVersion + 1;
         room.status = nextState.game?.result ? "finished" : "playing";
@@ -1386,15 +1436,39 @@ class ChessUI {
     this.exitOnlineBtn.textContent = this.isSpectator ? "Stop spectating" :
       this.isRoomCreator ? "Exit & expire room" : "Leave online game";
     this.chatRoleLabel.textContent = this.isSpectator ? "Spectator" : "Player";
+    this.updatePlayerInviteButton();
+    this.applySpectatorLayout(this.isSpectator);
+  }
+
+  updatePlayerInviteButton() {
+    const roomFull = Boolean(this.roomCode && this.opponentConnected);
+    this.copyRoomLinkBtn.disabled = roomFull;
+    this.copyRoomLinkBtn.title = roomFull ? "Both players have joined this room" : "Copy player invite link";
+  }
+
+  applySpectatorLayout(enabled) {
+    document.body.classList.toggle("spectator-mode", enabled);
+    this.spectatorActions.classList.toggle("hidden", !enabled);
+    if (enabled) {
+      this.chatSection.classList.remove("hidden");
+      this.chatRoleLabel.textContent = "SPECTATOR • CHAT ONLY";
+    } else if (!this.roomCode) {
+      this.chatSection.classList.add("hidden");
+      this.chatRoleLabel.textContent = "Player";
+    }
   }
 
   async copyRoomLink() {
-    if (!this.roomCode) return;
+    if (!this.roomCode || this.opponentConnected) return;
     if (location.protocol === "file:") {
       this.showToast("Open the game from a web server to share it");
       return;
     }
-    const link = `${location.origin}${location.pathname}?game=${this.roomCode}`;
+    const url = new URL(location.href);
+    url.search = "";
+    url.hash = "";
+    url.searchParams.set("game", this.roomCode);
+    const link = url.toString();
     try { await navigator.clipboard.writeText(link); this.showToast("Invite link copied"); }
     catch { this.showToast(link); }
   }
@@ -1405,7 +1479,13 @@ class ChessUI {
       this.showToast("Open the game from a web server to share it");
       return;
     }
-    const link = `${location.origin}${location.pathname}?game=${this.roomCode}&watch=1`;
+    const url = new URL(location.href);
+    url.search = "";
+    url.hash = "spectator";
+    url.searchParams.set("game", this.roomCode);
+    url.searchParams.set("watch", "1");
+    url.searchParams.set("role", "spectator");
+    const link = url.toString();
     try { await navigator.clipboard.writeText(link); this.showToast("Spectator link copied"); }
     catch { this.showToast(link); }
   }
@@ -1465,6 +1545,8 @@ class ChessUI {
         room.status = "playing";
         room.updatedAt = firebase.database.ServerValue.TIMESTAMP;
         delete room.restartRequest;
+        delete room.undoRequest;
+        delete room.undoState;
         delete room.lastMoverUid;
         return room;
       }, undefined, false);
@@ -1475,9 +1557,69 @@ class ChessUI {
     }
   }
 
+  async requestOnlineUndo() {
+    if (!this.roomRef || this.isSpectator || !this.opponentConnected || !this.currentRoom?.undoState) return;
+    try {
+      const result = await this.roomRef.transaction(room => {
+        if (!room || room.active === false || room.undoRequest || !room.undoState) return undefined;
+        if (room.whiteUid !== this.uid && room.blackUid !== this.uid) return undefined;
+        room.undoRequest = { requesterUid: this.uid, requestedAt: firebase.database.ServerValue.TIMESTAMP };
+        return room;
+      }, undefined, false);
+      this.showToast(result.committed ? "Undo request sent" : "An undo request is already pending");
+    } catch (error) {
+      console.error(error);
+      this.showToast("Could not send undo request");
+    }
+  }
+
+  updateUndoRequest(request) {
+    const isPlayer = !this.isSpectator && (this.currentRoom?.whiteUid === this.uid || this.currentRoom?.blackUid === this.uid);
+    const awaitsMe = Boolean(isPlayer && request?.requesterUid && request.requesterUid !== this.uid);
+    this.undoRequestModal.classList.toggle("hidden", !awaitsMe);
+    if (this.mode === "online") {
+      this.undoBtn.querySelector("span").textContent = request ? "Undo requested…" : "Request undo";
+      this.undoBtn.disabled = this.isSpectator || !this.opponentConnected || !this.currentRoom?.undoState || Boolean(request) || this.onlineSyncing;
+    }
+  }
+
+  async respondToUndo(accept) {
+    if (!this.roomRef || this.isSpectator) return;
+    this.undoRequestModal.classList.add("hidden");
+    try {
+      if (!accept) {
+        await this.roomRef.child("undoRequest").transaction(request =>
+          request?.requesterUid && request.requesterUid !== this.uid ? null : undefined);
+        this.showToast("Undo declined");
+        return;
+      }
+
+      const result = await this.roomRef.transaction(room => {
+        if (!room || !room.undoRequest || !room.undoState || room.undoRequest.requesterUid === this.uid) return undefined;
+        if (room.whiteUid !== this.uid && room.blackUid !== this.uid) return undefined;
+        room.state = room.undoState;
+        room.stateVersion = (Number(room.stateVersion) || 0) + 1;
+        room.status = room.state?.game?.result ? "finished" : "playing";
+        room.updatedAt = firebase.database.ServerValue.TIMESTAMP;
+        delete room.undoRequest;
+        delete room.undoState;
+        delete room.lastMoverUid;
+        return room;
+      }, undefined, false);
+      this.showToast(result.committed ? "Last move undone" : "Undo request is no longer available");
+    } catch (error) {
+      console.error(error);
+      this.showToast("Could not undo the move");
+    }
+  }
+
   async sendChatMessage() {
     const text = this.chatInput.value.trim().slice(0, 300);
     if (!text || !this.roomRef || !this.uid) return;
+    if (this.isSpectator && !this.spectatorChatEnabled) {
+      this.showToast("Publish the spectator Firebase rules to enable sending", 1800);
+      return;
+    }
     this.chatInput.value = "";
     try {
       await this.roomRef.child("chat").push({ uid: this.uid, text, createdAt: firebase.database.ServerValue.TIMESTAMP });
@@ -1511,7 +1653,20 @@ class ChessUI {
       }
     }
 
-    const messages = Object.entries(room.chat || {}).slice(-100);
+    const allMessages = Object.entries(room.chat || {});
+    const messages = allMessages.slice(-100);
+    if (this.hasLoadedChat) {
+      const incoming = allMessages.filter(([id, message]) =>
+        !this.seenChatMessageIds.has(id) && message?.uid !== this.uid && !this.mutedUids.has(message?.uid));
+      const latest = incoming.at(-1)?.[1];
+      if (latest) {
+        const preview = String(latest.text || "").slice(0, 70);
+        this.showMessageToast(this.chatSenderLabel(latest.uid, room), preview);
+      }
+    }
+    for (const [id] of allMessages) this.seenChatMessageIds.add(id);
+    this.hasLoadedChat = true;
+
     for (const [, message] of messages) {
       if (!message?.uid || this.mutedUids.has(message.uid)) continue;
       const item = document.createElement("article");
@@ -1551,7 +1706,7 @@ class ChessUI {
     }
   }
 
-  async exitOnlineGame() {
+  async exitOnlineGame(createOwnGame = false) {
     if (!this.roomRef) return;
     try {
       if (this.isRoomCreator) await this.roomRef.remove();
@@ -1568,8 +1723,12 @@ class ChessUI {
     this.roomCard.classList.add("hidden");
     this.chatSection.classList.add("hidden");
     this.restartRequestModal.classList.add("hidden");
+    this.undoRequestModal.classList.add("hidden");
+    this.spectatorActions.classList.add("hidden");
+    document.body.classList.remove("spectator-mode");
     this.updateSetupVisibility();
     this.startNewGame();
+    if (createOwnGame) this.showToast("Choose a mode to create your own game");
   }
 
   async detachOnlineRoom(releaseSeat = true) {
@@ -1596,6 +1755,13 @@ class ChessUI {
     this.isSpectator = false;
     this.currentRoom = null;
     this.mutedUids.clear();
+    this.seenChatMessageIds.clear();
+    this.hasLoadedChat = false;
+    this.spectatorChatEnabled = true;
+    this.chatInput.disabled = false;
+    this.chatSendBtn.disabled = false;
+    this.chatInput.placeholder = "Send a message…";
+    document.body.classList.remove("spectator-mode");
   }
 
   handleExpiredRoom() {
@@ -1608,6 +1774,9 @@ class ChessUI {
     this.currentRoom = null;
     this.chatSection.classList.add("hidden");
     this.restartRequestModal.classList.add("hidden");
+    this.undoRequestModal.classList.add("hidden");
+    this.spectatorActions.classList.add("hidden");
+    document.body.classList.remove("spectator-mode");
     this.onlineStatusText.textContent = "This room has expired.";
     this.showToast("The creator ended this online game");
     this.render();
@@ -1617,10 +1786,15 @@ class ChessUI {
     const params = new URLSearchParams(location.search);
     const code = params.get("game");
     if (!code) return;
+    const spectatorLink = params.has("watch") || params.get("role") === "spectator" || location.hash === "#spectator";
     this.modeSelect.value = "online";
     this.updateSetupVisibility();
     this.roomCodeInput.value = code.toUpperCase();
-    await this.joinOnlineGame(code, params.get("watch") === "1");
+    if (spectatorLink) {
+      this.isSpectator = true;
+      this.applySpectatorLayout(true);
+    }
+    await this.joinOnlineGame(code, spectatorLink);
   }
 
   saveLocalGame() {
