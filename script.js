@@ -428,6 +428,9 @@ class ChessUI {
     this.onlineSyncing = false;
     this.onlineVersion = 0;
     this.hasImportedOnlineState = false;
+    this.isSpectator = false;
+    this.currentRoom = null;
+    this.mutedUids = new Set();
     this.cacheDom();
     this.bindEvents();
     this.initFirebase();
@@ -444,7 +447,9 @@ class ChessUI {
       "whitePlayerName","blackPlayerName","whiteCaptured","blackCaptured","whiteClock","blackClock",
       "whitePlayerCard","blackPlayerCard","thinkingBadge","promotionModal","promotionOptions","toast",
       "onlinePanel","createOnlineBtn","roomCodeInput","joinOnlineBtn","roomCard","roomCodeText",
-      "copyRoomLinkBtn","exitOnlineBtn","onlineStatusText"
+      "copyRoomLinkBtn","copySpectatorLinkBtn","restartOnlineBtn","exitOnlineBtn","onlineStatusText",
+      "chatSection","chatMessages","chatForm","chatInput","chatRoleLabel",
+      "restartRequestModal","acceptRestartBtn","declineRestartBtn"
     ];
     for (const id of ids) this[id] = document.getElementById(id);
   }
@@ -466,7 +471,12 @@ class ChessUI {
       this.roomCodeInput.value = this.roomCodeInput.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
     });
     this.copyRoomLinkBtn.addEventListener("click", () => this.copyRoomLink());
+    this.copySpectatorLinkBtn.addEventListener("click", () => this.copySpectatorLink());
+    this.restartOnlineBtn.addEventListener("click", () => this.requestOnlineRestart());
     this.exitOnlineBtn.addEventListener("click", () => this.exitOnlineGame());
+    this.chatForm.addEventListener("submit", event => { event.preventDefault(); this.sendChatMessage(); });
+    this.acceptRestartBtn.addEventListener("click", () => this.respondToRestart(true));
+    this.declineRestartBtn.addEventListener("click", () => this.respondToRestart(false));
   }
 
   updateSetupVisibility() {
@@ -507,8 +517,13 @@ class ChessUI {
 
   updatePlayerNames() {
     if (this.mode === "online") {
-      this.whitePlayerName.textContent = this.onlineColor === "w" ? "You • White" : "Friend • White";
-      this.blackPlayerName.textContent = this.onlineColor === "b" ? "You • Black" : "Friend • Black";
+      if (this.isSpectator) {
+        this.whitePlayerName.textContent = "Player • White";
+        this.blackPlayerName.textContent = "Player • Black";
+      } else {
+        this.whitePlayerName.textContent = this.onlineColor === "w" ? "You • White" : "Friend • White";
+        this.blackPlayerName.textContent = this.onlineColor === "b" ? "You • Black" : "Friend • Black";
+      }
     } else if (this.mode === "human") {
       this.whitePlayerName.textContent = "Player 1 • White";
       this.blackPlayerName.textContent = "Player 2 • Black";
@@ -523,7 +538,7 @@ class ChessUI {
 
   canHumanAct() {
     if (this.game.result || this.aiThinking || this.onlineSyncing) return false;
-    if (this.mode === "online") return Boolean(this.roomCode && this.opponentConnected && this.onlineColor === this.game.turn);
+    if (this.mode === "online") return Boolean(!this.isSpectator && this.roomCode && this.opponentConnected && this.onlineColor === this.game.turn);
     return this.mode === "human" || this.game.turn === this.humanColor;
   }
 
@@ -732,7 +747,7 @@ class ChessUI {
   }
 
   endAsDraw() {
-    if (this.game.result) return;
+    if (this.game.result || (this.mode === "online" && this.isSpectator)) return;
     const onlineRollback = this.mode === "online" ? this.exportOnlineState() : null;
     this.game.result = { type: "agreement", winner: null };
     this.selected = null;
@@ -751,7 +766,7 @@ class ChessUI {
   }
 
   resign() {
-    if (this.game.result) return;
+    if (this.game.result || (this.mode === "online" && this.isSpectator)) return;
     const onlineRollback = this.mode === "online" ? this.exportOnlineState() : null;
     const resigning = this.mode === "computer" ? this.humanColor :
       this.mode === "online" ? this.onlineColor : this.game.turn;
@@ -779,7 +794,7 @@ class ChessUI {
     this.renderClocks();
     this.lastMoveText.textContent = this.game.moveList.at(-1) || "No moves yet";
     this.undoBtn.disabled = this.mode === "online" || !this.game.history.length || this.aiThinking;
-    const waitingOnline = this.mode === "online" && !this.opponentConnected;
+    const waitingOnline = this.mode === "online" && (!this.opponentConnected || this.isSpectator);
     this.drawBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
     this.resignBtn.disabled = Boolean(this.game.result) || waitingOnline || this.onlineSyncing;
   }
@@ -958,6 +973,7 @@ class ChessUI {
     clearInterval(this.timer);
     this.timer = setInterval(() => {
       if (this.clockSeconds.w === null || this.game.result) return;
+      if (this.mode === "online" && this.isSpectator) return;
       if (this.mode === "online" && !this.opponentConnected) return;
       const color = this.game.turn;
       this.clockSeconds[color] = Math.max(0, this.clockSeconds[color] - 1);
@@ -1069,6 +1085,9 @@ class ChessUI {
       this.roomRef = this.db.ref(`rooms/${code}`);
       this.onlineColor = "w";
       this.isRoomCreator = true;
+      this.isSpectator = false;
+      this.currentRoom = null;
+      this.mutedUids.clear();
       this.opponentConnected = false;
       this.onlineVersion = 0;
       this.hasImportedOnlineState = true;
@@ -1086,6 +1105,7 @@ class ChessUI {
         active: true,
         status: "waiting",
         stateVersion: 0,
+        clockMinutes: minutes,
         createdAt: firebase.database.ServerValue.TIMESTAMP,
         updatedAt: firebase.database.ServerValue.TIMESTAMP,
         state: this.exportOnlineState()
@@ -1107,7 +1127,7 @@ class ChessUI {
     }
   }
 
-  async joinOnlineGame(rawCode) {
+  async joinOnlineGame(rawCode, asSpectator = false) {
     if (this.roomRef) {
       this.showToast("Leave the current online game first");
       return;
@@ -1121,9 +1141,13 @@ class ChessUI {
       const snap = await ref.once("value");
       if (!snap.exists() || snap.val().active === false) throw new Error("expired");
       const room = snap.val();
-      let color = "w";
+      let color = null;
 
-      if (room.whiteUid !== this.uid) {
+      if (asSpectator) {
+        await ref.child(`spectators/${this.uid}`).set(true);
+      } else if (room.whiteUid === this.uid) {
+        color = "w";
+      } else {
         color = "b";
         const claim = await ref.child("blackUid").transaction(currentUid => {
           if (currentUid === null || currentUid === this.uid) return this.uid;
@@ -1136,13 +1160,17 @@ class ChessUI {
       this.mode = "online";
       this.roomCode = code;
       this.roomRef = ref;
-      this.isRoomCreator = room.creatorUid === this.uid;
+      this.isSpectator = asSpectator;
+      this.isRoomCreator = !asSpectator && room.creatorUid === this.uid;
       this.onlineColor = color;
       this.onlineVersion = Number(room.stateVersion) || 0;
       if (room.state) this.importOnlineState(room.state);
       this.hasImportedOnlineState = Boolean(room.state);
-      this.opponentConnected = Boolean(room.whiteUid);
-      if (color === "b") {
+      this.opponentConnected = Boolean(room.whiteUid && room.blackUid);
+      if (asSpectator) {
+        try { await ref.child(`spectators/${this.uid}`).onDisconnect().remove(); }
+        catch (error) { console.warn("Could not register spectator disconnect cleanup", error); }
+      } else if (color === "b") {
         try { await ref.child("blackUid").onDisconnect().remove(); }
         catch (error) { console.warn("Could not register room disconnect cleanup", error); }
       }
@@ -1153,11 +1181,11 @@ class ChessUI {
       this.render();
       this.attachRoomListener();
       history.replaceState({}, "", `${location.pathname}?game=${code}`);
-      this.showToast(`Joined room ${code}`);
+      this.showToast(asSpectator ? `Watching room ${code}` : `Joined room ${code}`);
     } catch (error) {
       console.error(error);
       await this.detachOnlineRoom(false);
-      this.showToast(error.message === "full" ? "This room already has two players" :
+      this.showToast(error.message === "full" ? "This room already has two players — use a spectator link to watch" :
         error.message === "expired" ? "This game link has expired" : "Could not join this room");
     } finally {
       this.setOnlineBusy(false);
@@ -1190,9 +1218,15 @@ class ChessUI {
     }
 
     const room = snapshot.val();
+    this.currentRoom = room;
     const wasConnected = this.opponentConnected;
-    const opponentUid = this.onlineColor === "w" ? room.blackUid : room.whiteUid;
-    this.opponentConnected = Boolean(opponentUid);
+    const previousColor = this.onlineColor;
+    if (!this.isSpectator) {
+      if (room.whiteUid === this.uid) this.onlineColor = "w";
+      else if (room.blackUid === this.uid) this.onlineColor = "b";
+    }
+    this.opponentConnected = Boolean(room.whiteUid && room.blackUid);
+    this.mutedUids = new Set(Object.keys(room.mutes?.[this.uid] || {}).filter(uid => room.mutes[this.uid][uid]));
     const incomingVersion = Number(room.stateVersion) || 0;
     const shouldImportState = room.state &&
       (!this.hasImportedOnlineState || incomingVersion > this.onlineVersion) &&
@@ -1206,9 +1240,16 @@ class ChessUI {
       this.applyingRemoteState = false;
     }
 
+    if (!this.isSpectator && previousColor && previousColor !== this.onlineColor) {
+      this.flipped = this.onlineColor === "b";
+      this.showToast(`Restart accepted — you are now ${this.onlineColor === "w" ? "White" : "Black"}`);
+    }
+
+    this.updateRestartRequest(room.restartRequest || null);
+    this.renderChat(room);
     this.updateOnlineStatus();
     this.updatePlayerNames();
-    if (shouldImportState || wasConnected !== this.opponentConnected) {
+    if (shouldImportState || wasConnected !== this.opponentConnected || previousColor !== this.onlineColor) {
       this.render();
       this.saveLocalGame();
     }
@@ -1316,7 +1357,9 @@ class ChessUI {
 
   updateOnlineStatus() {
     if (!this.roomCode) return;
-    if (this.onlineSyncing) {
+    if (this.isSpectator) {
+      this.onlineStatusText.textContent = this.opponentConnected ? "Spectating live game" : "Spectating • waiting for both players";
+    } else if (this.onlineSyncing) {
       this.onlineStatusText.textContent = "Syncing move…";
     } else if (!this.opponentConnected) {
       this.onlineStatusText.textContent = this.isRoomCreator
@@ -1335,8 +1378,14 @@ class ChessUI {
 
   showRoomCard() {
     this.roomCard.classList.remove("hidden");
+    this.chatSection.classList.remove("hidden");
     this.roomCodeText.textContent = this.roomCode || "------";
-    this.exitOnlineBtn.textContent = this.isRoomCreator ? "Exit & expire room" : "Leave online game";
+    this.copyRoomLinkBtn.classList.toggle("hidden", this.isSpectator);
+    this.copySpectatorLinkBtn.classList.toggle("hidden", this.isSpectator);
+    this.restartOnlineBtn.classList.toggle("hidden", this.isSpectator);
+    this.exitOnlineBtn.textContent = this.isSpectator ? "Stop spectating" :
+      this.isRoomCreator ? "Exit & expire room" : "Leave online game";
+    this.chatRoleLabel.textContent = this.isSpectator ? "Spectator" : "Player";
   }
 
   async copyRoomLink() {
@@ -1350,10 +1399,163 @@ class ChessUI {
     catch { this.showToast(link); }
   }
 
+  async copySpectatorLink() {
+    if (!this.roomCode) return;
+    if (location.protocol === "file:") {
+      this.showToast("Open the game from a web server to share it");
+      return;
+    }
+    const link = `${location.origin}${location.pathname}?game=${this.roomCode}&watch=1`;
+    try { await navigator.clipboard.writeText(link); this.showToast("Spectator link copied"); }
+    catch { this.showToast(link); }
+  }
+
+  createFreshOnlineState(minutes = 0) {
+    const freshGame = new ChessGame().snapshot();
+    freshGame.board = freshGame.board.map(row => row.map(piece => piece || false));
+    const seconds = minutes > 0 ? minutes * 60 : false;
+    return { game: freshGame, clockSeconds: { w: seconds, b: seconds } };
+  }
+
+  async requestOnlineRestart() {
+    if (!this.roomRef || this.isSpectator || !this.opponentConnected) return;
+    try {
+      const result = await this.roomRef.transaction(room => {
+        if (!room || room.active === false || room.restartRequest) return undefined;
+        if (room.whiteUid !== this.uid && room.blackUid !== this.uid) return undefined;
+        room.restartRequest = { requesterUid: this.uid, requestedAt: firebase.database.ServerValue.TIMESTAMP };
+        return room;
+      }, undefined, false);
+      this.showToast(result.committed ? "Restart request sent" : "A restart request is already pending");
+    } catch (error) {
+      console.error(error);
+      this.showToast("Could not send restart request");
+    }
+  }
+
+  updateRestartRequest(request) {
+    const isPlayer = !this.isSpectator && (this.currentRoom?.whiteUid === this.uid || this.currentRoom?.blackUid === this.uid);
+    const awaitsMe = Boolean(isPlayer && request?.requesterUid && request.requesterUid !== this.uid);
+    this.restartRequestModal.classList.toggle("hidden", !awaitsMe);
+    this.restartOnlineBtn.disabled = !this.opponentConnected || Boolean(request);
+    this.restartOnlineBtn.textContent = request?.requesterUid === this.uid
+      ? "Restart requested…"
+      : "Restart & swap colors";
+  }
+
+  async respondToRestart(accept) {
+    if (!this.roomRef || this.isSpectator) return;
+    this.restartRequestModal.classList.add("hidden");
+    try {
+      if (!accept) {
+        const requestRef = this.roomRef.child("restartRequest");
+        await requestRef.transaction(request => request?.requesterUid && request.requesterUid !== this.uid ? null : undefined);
+        this.showToast("Restart declined");
+        return;
+      }
+
+      const result = await this.roomRef.transaction(room => {
+        if (!room || !room.restartRequest || room.restartRequest.requesterUid === this.uid) return undefined;
+        if (room.whiteUid !== this.uid && room.blackUid !== this.uid) return undefined;
+        const oldWhite = room.whiteUid;
+        room.whiteUid = room.blackUid;
+        room.blackUid = oldWhite;
+        room.state = this.createFreshOnlineState(Number(room.clockMinutes) || 0);
+        room.stateVersion = (Number(room.stateVersion) || 0) + 1;
+        room.status = "playing";
+        room.updatedAt = firebase.database.ServerValue.TIMESTAMP;
+        delete room.restartRequest;
+        delete room.lastMoverUid;
+        return room;
+      }, undefined, false);
+      this.showToast(result.committed ? "Game restarted with colors swapped" : "Restart request is no longer available");
+    } catch (error) {
+      console.error(error);
+      this.showToast("Could not restart the game");
+    }
+  }
+
+  async sendChatMessage() {
+    const text = this.chatInput.value.trim().slice(0, 300);
+    if (!text || !this.roomRef || !this.uid) return;
+    this.chatInput.value = "";
+    try {
+      await this.roomRef.child("chat").push({ uid: this.uid, text, createdAt: firebase.database.ServerValue.TIMESTAMP });
+    } catch (error) {
+      console.error(error);
+      this.chatInput.value = text;
+      this.showToast("Message could not be sent");
+    }
+  }
+
+  chatSenderLabel(uid, room) {
+    if (uid === room.whiteUid) return `White${uid === this.uid ? " • You" : ""}`;
+    if (uid === room.blackUid) return `Black${uid === this.uid ? " • You" : ""}`;
+    return `Spectator ${String(uid).slice(0, 4)}${uid === this.uid ? " • You" : ""}`;
+  }
+
+  renderChat(room) {
+    if (!this.roomCode) return;
+    this.chatMessages.innerHTML = "";
+
+    if (!this.isSpectator && this.mutedUids.size) {
+      for (const mutedUid of this.mutedUids) {
+        const notice = document.createElement("div");
+        notice.className = "chat-message";
+        const button = document.createElement("button");
+        button.className = "mute-chat-btn";
+        button.textContent = `Unmute ${this.chatSenderLabel(mutedUid, room)}`;
+        button.addEventListener("click", () => this.setChatMuted(mutedUid, false));
+        notice.appendChild(button);
+        this.chatMessages.appendChild(notice);
+      }
+    }
+
+    const messages = Object.entries(room.chat || {}).slice(-100);
+    for (const [, message] of messages) {
+      if (!message?.uid || this.mutedUids.has(message.uid)) continue;
+      const item = document.createElement("article");
+      item.className = `chat-message${message.uid === this.uid ? " own" : ""}`;
+      const header = document.createElement("header");
+      const sender = document.createElement("strong");
+      sender.textContent = this.chatSenderLabel(message.uid, room);
+      header.appendChild(sender);
+      if (!this.isSpectator && message.uid !== this.uid) {
+        const mute = document.createElement("button");
+        mute.className = "mute-chat-btn";
+        mute.textContent = "Mute";
+        mute.addEventListener("click", () => this.setChatMuted(message.uid, true));
+        header.appendChild(mute);
+      }
+      if (Number(message.createdAt)) {
+        const time = document.createElement("time");
+        time.textContent = new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        header.appendChild(time);
+      }
+      const body = document.createElement("p");
+      body.textContent = String(message.text || "");
+      item.append(header, body);
+      this.chatMessages.appendChild(item);
+    }
+    if (!this.chatMessages.children.length) this.chatMessages.innerHTML = '<p class="empty-state">No messages yet.</p>';
+    this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
+  }
+
+  async setChatMuted(targetUid, muted) {
+    if (!this.roomRef || this.isSpectator || targetUid === this.uid) return;
+    try {
+      await this.roomRef.child(`mutes/${this.uid}/${targetUid}`).set(muted ? true : null);
+    } catch (error) {
+      console.error(error);
+      this.showToast("Mute setting could not be changed");
+    }
+  }
+
   async exitOnlineGame() {
     if (!this.roomRef) return;
     try {
       if (this.isRoomCreator) await this.roomRef.remove();
+      else if (this.isSpectator) await this.roomRef.child(`spectators/${this.uid}`).remove();
       else {
         await this.roomRef.child("blackUid").transaction(currentUid =>
           currentUid === this.uid ? null : undefined);
@@ -1364,6 +1566,8 @@ class ChessUI {
     this.modeSelect.value = "computer";
     this.mode = "computer";
     this.roomCard.classList.add("hidden");
+    this.chatSection.classList.add("hidden");
+    this.restartRequestModal.classList.add("hidden");
     this.updateSetupVisibility();
     this.startNewGame();
   }
@@ -1372,7 +1576,9 @@ class ChessUI {
     clearInterval(this.roomPollTimer);
     this.roomPollTimer = null;
     if (this.roomRef && this.roomListener) this.roomRef.off("value", this.roomListener);
-    if (releaseSeat && this.roomRef && this.uid && this.onlineColor === "b") {
+    if (releaseSeat && this.roomRef && this.uid && this.isSpectator) {
+      try { await this.roomRef.child(`spectators/${this.uid}`).remove(); } catch {}
+    } else if (releaseSeat && this.roomRef && this.uid && this.onlineColor === "b") {
       try {
         await this.roomRef.child("blackUid").transaction(currentUid =>
           currentUid === this.uid ? null : undefined);
@@ -1387,6 +1593,9 @@ class ChessUI {
     this.onlineSyncing = false;
     this.onlineVersion = 0;
     this.hasImportedOnlineState = false;
+    this.isSpectator = false;
+    this.currentRoom = null;
+    this.mutedUids.clear();
   }
 
   handleExpiredRoom() {
@@ -1396,18 +1605,22 @@ class ChessUI {
     this.roomRef = null;
     this.roomCode = null;
     this.opponentConnected = false;
+    this.currentRoom = null;
+    this.chatSection.classList.add("hidden");
+    this.restartRequestModal.classList.add("hidden");
     this.onlineStatusText.textContent = "This room has expired.";
     this.showToast("The creator ended this online game");
     this.render();
   }
 
   async tryJoinFromUrl() {
-    const code = new URLSearchParams(location.search).get("game");
+    const params = new URLSearchParams(location.search);
+    const code = params.get("game");
     if (!code) return;
     this.modeSelect.value = "online";
     this.updateSetupVisibility();
     this.roomCodeInput.value = code.toUpperCase();
-    await this.joinOnlineGame(code);
+    await this.joinOnlineGame(code, params.get("watch") === "1");
   }
 
   saveLocalGame() {

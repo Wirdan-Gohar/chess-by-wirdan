@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#151922" />
   <title>Royal Board Chess</title>
-  <link rel="stylesheet" href="style.css?v=11" />
+  <link rel="stylesheet" href="style.css?v=12" />
 </head>
 <body>
   <main class="app-shell">
@@ -96,7 +96,9 @@
           <div class="room-card hidden" id="roomCard">
             <small>ROOM CODE</small>
             <strong id="roomCodeText">------</strong>
-            <button id="copyRoomLinkBtn">Copy invite link</button>
+            <button id="copyRoomLinkBtn">Copy player invite link</button>
+            <button id="copySpectatorLinkBtn">Copy spectator link</button>
+            <button id="restartOnlineBtn">Restart & swap colors</button>
             <button id="exitOnlineBtn" class="danger-btn">Exit & expire room</button>
             <p id="onlineStatusText">Waiting for opponent…</p>
           </div>
@@ -163,6 +165,20 @@
           <button id="drawBtn">½ <span>Draw</span></button>
           <button id="resignBtn" class="danger-btn">⚑ <span>Resign</span></button>
         </div>
+
+        <section class="chat-section hidden" id="chatSection" aria-label="Room chat">
+          <div class="section-heading">
+            <h2>Room chat</h2>
+            <span id="chatRoleLabel">Player</span>
+          </div>
+          <div class="chat-messages" id="chatMessages" aria-live="polite">
+            <p class="empty-state">No messages yet.</p>
+          </div>
+          <form class="chat-form" id="chatForm">
+            <input id="chatInput" maxlength="300" placeholder="Send a message…" autocomplete="off" />
+            <button type="submit">Send</button>
+          </form>
+        </section>
       </aside>
     </section>
   </main>
@@ -172,6 +188,18 @@
       <p>Promote your pawn</p>
       <h2>Choose a piece</h2>
       <div class="promotion-options" id="promotionOptions"></div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop hidden" id="restartRequestModal" role="dialog" aria-modal="true" aria-labelledby="restartRequestTitle">
+    <div class="modal-card">
+      <p>RESTART REQUEST</p>
+      <h2 id="restartRequestTitle">Play again with swapped colors?</h2>
+      <div class="game-over-message">Your opponent wants to reset the board. You will play the opposite color.</div>
+      <div class="game-over-actions">
+        <button class="primary-btn" id="acceptRestartBtn">Accept & restart</button>
+        <button id="declineRestartBtn">Decline</button>
+      </div>
     </div>
   </div>
 
@@ -195,6 +223,6 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
-  <script src="script.js?v=15"></script>
+  <script src="script.js?v=16"></script>
 </body>
 </html>

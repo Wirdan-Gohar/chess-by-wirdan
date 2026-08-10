@@ -27,6 +27,10 @@ FEATURES
 - Sound effects made with the browser Web Audio API
 - Responsive mobile layout
 - Three board themes
+- Online rematches that require the other player's approval and swap colors
+- Online room chat for players and spectators
+- Player-controlled chat muting
+- Spectator links that either player can share
 
 NOTE
 The computer opponent uses a lightweight minimax engine written in JavaScript. It is designed for smooth browser play, not grandmaster-strength analysis.
@@ -38,3 +42,4 @@ ONLINE MULTIPLAYER SETUP
 3. Add wirdan-gohar.github.io to Authentication > Settings > Authorized domains.
 4. Upload index.html, style.css, and script.js to GitHub.
 5. Open the site, choose Play online with friend, then Create online game.
+6. Use Copy player invite link for the second player or Copy spectator link for viewers.
