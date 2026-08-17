@@ -12,6 +12,7 @@ HOW TO RUN
 3. For online multiplayer, host the files on GitHub Pages or run a local web server. Online mode requires internet access and will not create a usable invite link from a file:// URL.
 
 FEATURES
+- Optional username saved in localStorage and used in player and turn messages
 - Human vs computer
 - Human vs human on one device
 - Play as White, Black, or a random color
@@ -31,6 +32,7 @@ FEATURES
 - Online room chat for players and spectators
 - Player-controlled chat muting
 - Spectator links that either player can share
+- Game-over dialog for checkmate, stalemate, draws, resignation, and timeout
 
 NOTE
 The computer opponent uses a lightweight minimax engine written in JavaScript. It is designed for smooth browser play, not grandmaster-strength analysis.

@@ -6,6 +6,7 @@ const PIECES = {
   b: { k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟" }
 };
 const PIECE_NAMES = { k: "K", q: "Q", r: "R", b: "B", n: "N", p: "" };
+const PIECE_LABELS = { k: "King", q: "Queen", r: "Rook", b: "Bishop", n: "Knight", p: "Pawn" };
 const VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 20000 };
 
 const firebaseConfig = {
@@ -434,7 +435,12 @@ class ChessUI {
     this.seenChatMessageIds = new Set();
     this.hasLoadedChat = false;
     this.spectatorChatEnabled = true;
+    this.coachSuggestion = null;
+    this.coachSuggestionKey = null;
+    this.username = this.readStoredUsername();
+    this.dismissedGameOverKey = null;
     this.cacheDom();
+    this.usernameInput.value = this.username;
     this.bindEvents();
     this.initFirebase();
     if (!this.restoreLocalGame()) this.startNewGame();
@@ -444,9 +450,10 @@ class ChessUI {
 
   cacheDom() {
     const ids = [
-      "chessboard","modeSelect","colorSelect","difficultySelect","clockSelect","themeSelect",
+      "chessboard","modeSelect","colorSelect","difficultySelect","clockSelect","themeSelect","usernameInput",
       "colorField","difficultyField","newGameBtn","undoBtn","flipBtn","drawBtn","resignBtn",
       "soundToggle","hintToggle","statusText","statusDot","lastMoveText","moveHistory","copyMovesBtn",
+      "coachSwitchRow","coachToggle","coachBanner","coachBannerText","coachCard","coachMoveText","coachReasonText",
       "whitePlayerName","blackPlayerName","whiteCaptured","blackCaptured","whiteClock","blackClock",
       "whitePlayerCard","blackPlayerCard","thinkingBadge","promotionModal","promotionOptions","toast",
       "onlinePanel","createOnlineBtn","roomCodeInput","joinOnlineBtn","roomCard","roomCodeText",
@@ -454,13 +461,17 @@ class ChessUI {
       "chatSection","chatMessages","chatForm","chatInput","chatSendBtn","chatRoleLabel",
       "restartRequestModal","acceptRestartBtn","declineRestartBtn",
       "undoRequestModal","acceptUndoBtn","declineUndoBtn",
-      "setupPanel","gameControls","spectatorActions","spectatorCreateGameBtn"
+      "setupPanel","gameControls","spectatorActions","spectatorCreateGameBtn",
+      "gameOverModal","gameOverIcon","gameOverLabel","gameOverTitle","gameOverMessage",
+      "modalNewGameBtn","closeGameOverBtn"
     ];
     for (const id of ids) this[id] = document.getElementById(id);
   }
 
   bindEvents() {
     this.modeSelect.addEventListener("change", () => this.updateSetupVisibility());
+    this.usernameInput.addEventListener("input", () => this.updateUsername(false));
+    this.usernameInput.addEventListener("change", () => this.updateUsername(true));
     this.newGameBtn.addEventListener("click", () => this.startNewGame());
     this.undoBtn.addEventListener("click", () => this.undo());
     this.flipBtn.addEventListener("click", () => { this.flipped = !this.flipped; this.render(); this.saveLocalGame(); });
@@ -469,6 +480,7 @@ class ChessUI {
     this.copyMovesBtn.addEventListener("click", () => this.copyMoves());
     this.themeSelect.addEventListener("change", () => { this.render(); this.saveLocalGame(); });
     this.hintToggle.addEventListener("change", () => { this.renderBoard(); this.saveLocalGame(); });
+    this.coachToggle.addEventListener("change", () => this.setCoachEnabled(this.coachToggle.checked));
     this.createOnlineBtn.addEventListener("click", () => this.createOnlineGame());
     this.joinOnlineBtn.addEventListener("click", () => this.joinOnlineGame(this.roomCodeInput.value));
     this.roomCodeInput.addEventListener("keydown", e => { if (e.key === "Enter") this.joinOnlineGame(this.roomCodeInput.value); });
@@ -485,6 +497,12 @@ class ChessUI {
     this.acceptUndoBtn.addEventListener("click", () => this.respondToUndo(true));
     this.declineUndoBtn.addEventListener("click", () => this.respondToUndo(false));
     this.spectatorCreateGameBtn.addEventListener("click", () => this.exitOnlineGame(true));
+    this.closeGameOverBtn.addEventListener("click", () => this.closeGameOver());
+    this.modalNewGameBtn.addEventListener("click", () => {
+      this.closeGameOver();
+      if (this.mode === "online") this.requestOnlineRestart();
+      else this.startNewGame();
+    });
   }
 
   updateSetupVisibility() {
@@ -494,6 +512,43 @@ class ChessUI {
     this.difficultyField.style.display = vsComputer ? "grid" : "none";
     this.newGameBtn.style.display = online ? "none" : "block";
     this.onlinePanel.classList.toggle("show", online);
+    const canUseCoach = online && !this.isSpectator && this.isCoachOwnerAccount();
+    this.coachSwitchRow.classList.toggle("hidden", !canUseCoach);
+    if (!online) this.coachToggle.checked = false;
+  }
+
+  isCoachOwnerAccount() {
+    return this.username === "wirdann";
+  }
+
+  readStoredUsername() {
+    try { return String(localStorage.getItem("username") || "").trim().slice(0, 24); }
+    catch { return ""; }
+  }
+
+  updateUsername(syncOnline = false) {
+    let username = this.usernameInput.value.replace(/\s+/g, " ").trimStart().slice(0, 24);
+    if (syncOnline) {
+      username = username.trim();
+      this.usernameInput.value = username;
+    }
+    this.username = username;
+    try {
+      if (this.username) localStorage.setItem("username", this.username);
+      else localStorage.removeItem("username");
+    } catch { /* Username storage is optional. */ }
+    this.updateSetupVisibility();
+    this.updatePlayerNames();
+    this.renderStatus();
+    this.renderGameOver();
+    if (syncOnline) this.syncOnlineUsername();
+  }
+
+  async syncOnlineUsername() {
+    if (!this.roomRef || this.isSpectator || !this.onlineColor) return;
+    const field = this.onlineColor === "w" ? "whiteName" : "blackName";
+    try { await this.roomRef.child(field).set(this.username || null); }
+    catch (error) { console.warn("Could not sync username", error); }
   }
 
   startNewGame() {
@@ -525,23 +580,36 @@ class ChessUI {
 
   updatePlayerNames() {
     if (this.mode === "online") {
+      const whiteName = this.currentRoom?.whiteName || (this.onlineColor === "w" ? this.username : "") || "Player";
+      const blackName = this.currentRoom?.blackName || (this.onlineColor === "b" ? this.username : "") || "Player";
       if (this.isSpectator) {
-        this.whitePlayerName.textContent = "Player • White";
-        this.blackPlayerName.textContent = "Player • Black";
+        this.whitePlayerName.textContent = `${whiteName} • White`;
+        this.blackPlayerName.textContent = `${blackName} • Black`;
       } else {
-        this.whitePlayerName.textContent = this.onlineColor === "w" ? "You • White" : "Friend • White";
-        this.blackPlayerName.textContent = this.onlineColor === "b" ? "You • Black" : "Friend • Black";
+        this.whitePlayerName.textContent = `${this.onlineColor === "w" ? (this.username || "You") : whiteName} • White`;
+        this.blackPlayerName.textContent = `${this.onlineColor === "b" ? (this.username || "You") : blackName} • Black`;
       }
     } else if (this.mode === "human") {
-      this.whitePlayerName.textContent = "Player 1 • White";
+      this.whitePlayerName.textContent = `${this.username || "Player 1"} • White`;
       this.blackPlayerName.textContent = "Player 2 • Black";
     } else if (this.humanColor === "w") {
-      this.whitePlayerName.textContent = "You • White";
+      this.whitePlayerName.textContent = `${this.username || "You"} • White`;
       this.blackPlayerName.textContent = "Computer • Black";
     } else {
       this.whitePlayerName.textContent = "Computer • White";
-      this.blackPlayerName.textContent = "You • Black";
+      this.blackPlayerName.textContent = `${this.username || "You"} • Black`;
     }
+  }
+
+  playerNameForColor(color) {
+    if (this.mode === "online") {
+      const roomName = color === "w" ? this.currentRoom?.whiteName : this.currentRoom?.blackName;
+      if (!this.isSpectator && color === this.onlineColor) return this.username || "You";
+      return roomName || (this.isSpectator ? (color === "w" ? "White" : "Black") : "Friend");
+    }
+    if (this.mode === "computer") return color === this.humanColor ? (this.username || "You") : "Computer";
+    if (color === "w") return this.username || "Player 1";
+    return "Player 2";
   }
 
   canHumanAct() {
@@ -658,6 +726,61 @@ class ChessUI {
       } else if (Math.abs(score - bestScore) < 0.01) bestMoves.push(move);
     }
     return bestMoves[Math.floor(Math.random() * bestMoves.length)];
+  }
+
+  chooseCoachMove(color) {
+    const moves = this.game.generateLegalMoves(color);
+    if (!moves.length) return null;
+    const previousAiColor = this.aiColor;
+    this.aiColor = color;
+    let bestMove = null;
+    let bestScore = -Infinity;
+    try {
+      for (const move of this.orderMoves(moves)) {
+        const state = this.game.snapshot();
+        let score;
+        try {
+          this.game.applyMove(move);
+          score = this.minimax(2, -Infinity, Infinity, false);
+        } finally {
+          this.game.restore(state);
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          bestMove = move;
+        }
+      }
+    } finally {
+      this.aiColor = previousAiColor;
+    }
+    return bestMove;
+  }
+
+  coachMoveDetails(move) {
+    const piece = this.game.board[move.from.r][move.from.c];
+    const captured = move.special === "enPassant"
+      ? this.game.board[move.from.r][move.to.c]
+      : this.game.board[move.to.r][move.to.c];
+    const from = squareName(move.from.r, move.from.c);
+    const to = squareName(move.to.r, move.to.c);
+    const promotion = move.promotion ? `, promote to ${PIECE_LABELS[move.promotion]}` : "";
+    let reason = "Improves your position while keeping a solid reply to the opponent.";
+    if (move.special?.startsWith("castle")) reason = "Castles your king to safety and activates the rook.";
+    else if (move.promotion) reason = `Promotes the pawn to a ${PIECE_LABELS[move.promotion]}.`;
+    else if (captured) reason = `Captures the opponent's ${PIECE_LABELS[captured.type]}.`;
+    else {
+      const state = this.game.snapshot();
+      this.game.applyMove(move);
+      const givesCheck = this.game.isKingInCheck(this.game.turn);
+      this.game.restore(state);
+      if (givesCheck) reason = "Checks the opposing king and forces a response.";
+      else if (["n", "b"].includes(piece.type) && !piece.moved) reason = `Develops your ${PIECE_LABELS[piece.type].toLowerCase()} toward an active square.`;
+      else if (move.to.c >= 2 && move.to.c <= 5 && move.to.r >= 2 && move.to.r <= 5) reason = "Builds influence in the center of the board.";
+    }
+    return {
+      label: `${PIECE_LABELS[piece.type]} ${from} → ${to}${promotion}`,
+      reason
+    };
   }
 
   minimax(depth, alpha, beta, maximizing) {
@@ -794,9 +917,107 @@ class ChessUI {
     }
   }
 
+  isCoachActiveForMe() {
+    const coach = this.currentRoom?.coach;
+    return Boolean(this.mode === "online" && !this.isSpectator && coach?.enabled &&
+      coach.uid === this.uid && coach.color === this.onlineColor);
+  }
+
+  renderCoach() {
+    const coach = this.mode === "online" && this.currentRoom?.coach?.enabled
+      ? this.currentRoom.coach
+      : null;
+    this.coachBanner.classList.toggle("hidden", !coach);
+    if (coach) {
+      const color = coach.color === "b" ? "Black" : "White";
+      const recipient = coach.uid === this.uid ? `You (${color}) are` : `${color} is`;
+      this.coachBannerText.textContent = `COACHED GAME • ${recipient} receiving move suggestions`;
+    }
+
+    if (this.roomCode && this.currentRoom && this.isCoachOwnerAccount() && !this.isSpectator) {
+      this.coachToggle.checked = Boolean(coach && coach.uid === this.uid);
+    }
+
+    const activeForMe = this.isCoachActiveForMe();
+    this.coachCard.classList.toggle("hidden", !activeForMe);
+    if (!activeForMe) {
+      this.coachSuggestion = null;
+      this.coachSuggestionKey = null;
+      return;
+    }
+
+    if (this.game.result) {
+      this.coachSuggestion = null;
+      this.coachSuggestionKey = null;
+      this.coachMoveText.textContent = "Game finished";
+      this.coachReasonText.textContent = "Start a new game to receive more suggestions.";
+      return;
+    }
+    if (!this.opponentConnected || this.game.turn !== this.onlineColor) {
+      this.coachSuggestion = null;
+      this.coachSuggestionKey = null;
+      this.coachMoveText.textContent = this.opponentConnected ? "Waiting for opponent…" : "Waiting for opponent to join…";
+      this.coachReasonText.textContent = "A recommendation will appear when it is your turn.";
+      return;
+    }
+
+    const key = `${this.game.positionKey()}|${this.onlineColor}`;
+    if (this.coachSuggestionKey !== key) {
+      this.coachSuggestion = this.chooseCoachMove(this.onlineColor);
+      this.coachSuggestionKey = key;
+    }
+    if (!this.coachSuggestion) {
+      this.coachMoveText.textContent = "No legal move";
+      this.coachReasonText.textContent = "The current position has no available legal move.";
+      return;
+    }
+    const details = this.coachMoveDetails(this.coachSuggestion);
+    this.coachMoveText.textContent = details.label;
+    this.coachReasonText.textContent = `${details.reason} You decide whether to play it.`;
+  }
+
+  async setCoachEnabled(enabled) {
+    if (!this.isCoachOwnerAccount() || this.modeSelect.value !== "online" || this.isSpectator) {
+      this.coachToggle.checked = false;
+      return;
+    }
+    if (!this.roomRef || !this.uid || !this.onlineColor) {
+      // Keep the choice pending so a newly created room starts as coached.
+      return;
+    }
+    this.coachToggle.disabled = true;
+    try {
+      const result = await this.roomRef.transaction(room => {
+        if (!room || room.active === false) return undefined;
+        if (room.whiteUid !== this.uid && room.blackUid !== this.uid) return undefined;
+        if (enabled) {
+          room.coach = { enabled: true, uid: this.uid, color: this.onlineColor };
+        } else if (room.coach?.uid === this.uid) {
+          delete room.coach;
+        } else {
+          return undefined;
+        }
+        room.updatedAt = firebase.database.ServerValue.TIMESTAMP;
+        return room;
+      }, undefined, false);
+      if (!result.committed) this.coachToggle.checked = !enabled;
+      this.showToast(result.committed
+        ? enabled ? "Coach suggestions enabled • opponent can see the coached-game banner" : "Coach suggestions disabled"
+        : "Coach setting could not be changed");
+    } catch (error) {
+      console.error(error);
+      this.coachToggle.checked = !enabled;
+      this.showToast("Coach setting could not be changed");
+    } finally {
+      this.coachToggle.disabled = false;
+    }
+  }
+
   render() {
+    this.renderCoach();
     this.renderBoard();
     this.renderStatus();
+    this.renderGameOver();
     this.renderHistory();
     this.renderCaptured();
     this.renderClocks();
@@ -837,6 +1058,10 @@ class ChessUI {
       )) square.classList.add("last-move");
       if (this.selected && this.selected.r === r && this.selected.c === c) square.classList.add("selected");
       if (checkedKing && checkedKing.r === r && checkedKing.c === c) square.classList.add("in-check");
+      if (this.coachSuggestion && this.isCoachActiveForMe()) {
+        if (this.coachSuggestion.from.r === r && this.coachSuggestion.from.c === c) square.classList.add("coach-from");
+        if (this.coachSuggestion.to.r === r && this.coachSuggestion.to.c === c) square.classList.add("coach-to");
+      }
 
       const legalMove = legalMap.get(`${r},${c}`);
       if (hints && legalMove) {
@@ -914,7 +1139,7 @@ class ChessUI {
 
     if (this.game.result) {
       this.statusDot.classList.add("ended");
-      const winner = this.game.result.winner === "w" ? "White" : this.game.result.winner === "b" ? "Black" : null;
+      const winner = this.game.result.winner ? this.playerNameForColor(this.game.result.winner) : null;
       const messages = {
         checkmate: `Checkmate • ${winner} wins`,
         stalemate: "Draw by stalemate",
@@ -935,11 +1160,50 @@ class ChessUI {
       return;
     }
 
-    const color = this.game.turn === "w" ? "White" : "Black";
+    const playerName = this.playerNameForColor(this.game.turn);
     if (this.game.isKingInCheck(this.game.turn)) {
       this.statusDot.classList.add("warning");
-      this.statusText.textContent = `${color} is in check`;
-    } else this.statusText.textContent = `${color} to move`;
+      this.statusText.textContent = `${playerName} is in check`;
+    } else this.statusText.textContent = `${playerName}'s turn`;
+  }
+
+  gameOverKey() {
+    if (!this.game.result) return null;
+    return `${this.game.result.type}|${this.game.result.winner || "draw"}|${this.game.moveList.length}|${this.game.fullmove}`;
+  }
+
+  closeGameOver() {
+    this.dismissedGameOverKey = this.gameOverKey();
+    this.gameOverModal.classList.add("hidden");
+  }
+
+  renderGameOver() {
+    const result = this.game.result;
+    if (!result) {
+      this.dismissedGameOverKey = null;
+      this.gameOverModal.classList.add("hidden");
+      return;
+    }
+
+    const key = this.gameOverKey();
+    const winnerName = result.winner ? this.playerNameForColor(result.winner) : null;
+    const details = {
+      checkmate: ["Checkmate", `${winnerName} wins by checkmate.`],
+      stalemate: ["Stalemate", "The game is drawn because the player to move has no legal move."],
+      fifty: ["Draw by 50-move rule", "Fifty moves were completed without a pawn move or capture."],
+      repetition: ["Draw by repetition", "The same position occurred three times."],
+      insufficient: ["Draw by insufficient material", "Neither player has enough material to force checkmate."],
+      agreement: ["Draw agreed", "The game ended in a draw by agreement."],
+      resignation: ["Resignation", `${winnerName} wins because the opponent resigned.`],
+      timeout: ["Time expired", `${winnerName} wins on time.`]
+    }[result.type] || ["Game over", winnerName ? `${winnerName} wins.` : "The game is drawn."];
+
+    this.gameOverLabel.textContent = winnerName ? "GAME OVER" : "DRAW";
+    this.gameOverTitle.textContent = details[0];
+    this.gameOverMessage.textContent = details[1];
+    this.gameOverIcon.textContent = winnerName ? PIECES[result.winner].k : "½";
+    this.modalNewGameBtn.textContent = this.mode === "online" ? "Request rematch" : "New Game";
+    this.gameOverModal.classList.toggle("hidden", this.dismissedGameOverKey === key);
   }
 
   renderHistory() {
@@ -1133,6 +1397,10 @@ class ChessUI {
         updatedAt: firebase.database.ServerValue.TIMESTAMP,
         state: this.exportOnlineState()
       };
+      if (this.coachToggle.checked && this.isCoachOwnerAccount()) {
+        room.coach = { enabled: true, uid: this.uid, color: "w" };
+      }
+      if (this.username) room.whiteName = this.username;
       await this.roomRef.set(room);
       this.attachRoomListener();
       this.showRoomCard();
@@ -1185,6 +1453,10 @@ class ChessUI {
           return undefined;
         });
         if (!claim.committed || claim.snapshot.val() !== this.uid) throw new Error("full");
+      }
+
+      if (!asSpectator && color) {
+        await ref.child(color === "w" ? "whiteName" : "blackName").set(this.username || null);
       }
 
       this.modeSelect.value = "online";
@@ -1260,6 +1532,8 @@ class ChessUI {
     }
 
     const room = snapshot.val();
+    const previousCoach = JSON.stringify(this.currentRoom?.coach || null);
+    const previousNames = `${this.currentRoom?.whiteName || ""}|${this.currentRoom?.blackName || ""}`;
     this.currentRoom = room;
     const wasConnected = this.opponentConnected;
     const previousColor = this.onlineColor;
@@ -1295,7 +1569,9 @@ class ChessUI {
     this.renderChat(room);
     this.updateOnlineStatus();
     this.updatePlayerNames();
-    if (shouldImportState || wasConnected !== this.opponentConnected || previousColor !== this.onlineColor) {
+    const coachChanged = previousCoach !== JSON.stringify(room.coach || null);
+    const namesChanged = previousNames !== `${room.whiteName || ""}|${room.blackName || ""}`;
+    if (shouldImportState || wasConnected !== this.opponentConnected || previousColor !== this.onlineColor || coachChanged || namesChanged) {
       this.render();
       this.saveLocalGame();
     }
@@ -1714,6 +1990,7 @@ class ChessUI {
       else {
         await this.roomRef.child("blackUid").transaction(currentUid =>
           currentUid === this.uid ? null : undefined);
+        await this.roomRef.child("blackName").remove();
       }
     } catch (error) { console.error(error); }
     await this.detachOnlineRoom(false);
@@ -1741,6 +2018,7 @@ class ChessUI {
       try {
         await this.roomRef.child("blackUid").transaction(currentUid =>
           currentUid === this.uid ? null : undefined);
+        await this.roomRef.child("blackName").remove();
       } catch {}
     }
     this.roomListener = null;

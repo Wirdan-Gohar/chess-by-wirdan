@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#151922" />
   <title>Royal Board Chess</title>
-  <link rel="stylesheet" href="style.css?v=14" />
+  <link rel="stylesheet" href="style.css?v=16" />
 </head>
 
 <body>
@@ -27,6 +27,12 @@
           <span class="switch"></span>
           Move hints
         </label>
+        <label class="switch-row hidden" id="coachSwitchRow"
+          title="Enable disclosed move coaching for this online game">
+          <input id="coachToggle" type="checkbox" />
+          <span class="switch"></span>
+          Coach suggestions
+        </label>
       </div>
     </header>
 
@@ -39,6 +45,11 @@
             <p>Choose the battlefield.</p>
           </div>
         </div>
+
+        <label class="field">
+          <span>Username <small>(optional)</small></span>
+          <input id="usernameInput" type="text" maxlength="24" placeholder="Enter your name" autocomplete="nickname" />
+        </label>
 
         <label class="field">
           <span>Game mode</span>
@@ -113,6 +124,11 @@
       </aside>
 
       <section class="board-column">
+        <div class="coach-banner hidden" id="coachBanner" role="status" aria-live="polite" style="display: none;">
+          <span>★</span>
+          <strong id="coachBannerText">COACHED GAME</strong>
+        </div>
+
         <div class="player-card player-black" id="blackPlayerCard">
           <div class="player-avatar">♚</div>
           <div class="player-details">
@@ -150,6 +166,17 @@
           <span>Last move</span>
           <strong id="lastMoveText">No moves yet</strong>
         </div>
+
+        <section class="coach-card hidden" id="coachCard" aria-live="polite">
+          <div class="coach-card-heading">
+            <span>★</span>
+            <div>
+              <small>COACH SUGGESTION</small>
+              <strong id="coachMoveText">Calculating…</strong>
+            </div>
+          </div>
+          <p id="coachReasonText">You decide whether to play this move.</p>
+        </section>
 
         <div class="move-history-section">
           <div class="section-heading">
@@ -246,7 +273,7 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
-  <script src="script.js?v=21"></script>
+  <script src="script.js?v=23"></script>
 </body>
 
 </html>
